@@ -36,15 +36,28 @@ DEFAULT_DRIVE_FOLDER_ID = "1v-MDctwhXwaa49xQb6az4_V6hhto8FSQ"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".webp", ".png")
 
 
+def find_gcloud_bin() -> str:
+    import shutil
+
+    found = shutil.which("gcloud")
+    if found:
+        return found
+    candidate = Path.home() / "google-cloud-sdk" / "bin" / "gcloud"
+    if candidate.exists():
+        return str(candidate)
+    return "gcloud"
+
+
 def get_access_token(explicit_token: str = "") -> str:
     if explicit_token:
         return explicit_token.strip()
     env_tok = os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
     if env_tok:
         return env_tok
+    gcloud_bin = find_gcloud_bin()
     try:
         out = subprocess.check_output(
-            ["gcloud", "auth", "application-default", "print-access-token"],
+            [gcloud_bin, "auth", "application-default", "print-access-token"],
             stderr=subprocess.PIPE,
             text=True,
         ).strip()
@@ -54,7 +67,7 @@ def get_access_token(explicit_token: str = "") -> str:
         pass
     try:
         out = subprocess.check_output(
-            ["gcloud", "auth", "print-access-token"],
+            [gcloud_bin, "auth", "print-access-token"],
             stderr=subprocess.PIPE,
             text=True,
         ).strip()
@@ -79,7 +92,7 @@ def detect_gcloud_project(explicit_project: str = "") -> str:
         return env_proj
     try:
         out = subprocess.check_output(
-            ["gcloud", "config", "get-value", "project"],
+            [find_gcloud_bin(), "config", "get-value", "project"],
             stderr=subprocess.DEVNULL,
             text=True,
         ).strip()
