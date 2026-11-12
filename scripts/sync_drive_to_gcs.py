@@ -63,6 +63,35 @@ def get_access_token(explicit_token: str = "") -> str:
     raise RuntimeError("Empty access token from gcloud.")
 
 
+QUOTA_PROJECT = ""
+
+
+def detect_gcloud_project(explicit_project: str = "") -> str:
+    if explicit_project:
+        return explicit_project.strip()
+    env_proj = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if env_proj:
+        return env_proj
+    try:
+        out = subprocess.check_output(
+            ["gcloud", "config", "get-value", "project"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if out and out != "(unset)":
+            return out
+    except Exception:
+        pass
+    return ""
+
+
+def base_headers(token: str) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    if QUOTA_PROJECT:
+        headers["X-Goog-User-Project"] = QUOTA_PROJECT
+    return headers
+
+
 def api_json(
     url: str,
     token: str,
@@ -71,23 +100,35 @@ def api_json(
     body: bytes | None = None,
     content_type: str = "application/json",
 ) -> dict[str, Any]:
-    headers = {"Authorization": f"Bearer {token}"}
+    import time
+
+    headers = base_headers(token)
     if body is not None:
         headers["Content-Type"] = content_type
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-            return json.loads(raw.decode("utf-8")) if raw else {}
-    except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", errors="replace")
-        if err.code in (401, 403) and "drive" in url:
-            raise RuntimeError(
-                f"Google Drive API returned HTTP {err.code}. Ensure Drive readonly scope is enabled:\n"
-                '  gcloud auth application-default login --scopes="https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/devstorage.full_control"\n'
-                f"Details: {detail}"
-            ) from err
-        raise RuntimeError(f"HTTP {err.code} on {method} {url}: {detail}") from err
+    for attempt in range(3):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as err:
+            if err.code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            detail = err.read().decode("utf-8", errors="replace")
+            if err.code in (401, 403) and "drive" in url:
+                raise RuntimeError(
+                    f"Google Drive API returned HTTP {err.code}. Ensure Drive API & readonly scope are enabled:\n"
+                    "  gcloud services enable drive.googleapis.com storage.googleapis.com\n"
+                    '  gcloud auth application-default login --scopes="https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/devstorage.full_control"\n'
+                    f"Details: {detail}"
+                ) from err
+            raise RuntimeError(f"HTTP {err.code} on {method} {url}: {detail}") from err
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    return {}
 
 
 def api_bytes(
@@ -98,12 +139,26 @@ def api_bytes(
     body: bytes | None = None,
     headers_extra: dict[str, str] | None = None,
 ) -> bytes:
-    headers = {"Authorization": f"Bearer {token}"}
+    import time
+
+    headers = base_headers(token)
     if headers_extra:
         headers.update(headers_extra)
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return resp.read()
+    for attempt in range(3):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as err:
+            if err.code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    return b""
 
 
 def list_drive_images(folder_id: str, token: str) -> list[dict[str, Any]]:
@@ -161,7 +216,7 @@ def delete_gcs_object(bucket: str, obj_name: str, token: str) -> None:
     encoded_b = urllib.parse.quote(bucket, safe="")
     encoded_o = urllib.parse.quote(obj_name, safe="")
     url = f"https://storage.googleapis.com/storage/v1/b/{encoded_b}/o/{encoded_o}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="DELETE")
+    req = urllib.request.Request(url, headers=base_headers(token), method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=60):
             pass
@@ -211,6 +266,7 @@ def apply_bucket_cors(bucket: str, cors_path: Path, token: str) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bucket", required=True, help="Target GCS bucket name (without gs://)")
+    parser.add_argument("--project", default="", help="Optional GCP project ID for API quota header")
     parser.add_argument(
         "--drive-folder-id",
         default=DEFAULT_DRIVE_FOLDER_ID,
@@ -229,7 +285,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    global QUOTA_PROJECT
     args = parse_args()
+    QUOTA_PROJECT = detect_gcloud_project(args.project)
     bucket = args.bucket.replace("gs://", "").strip("/")
     prefix = args.prefix.strip("/")
     token = get_access_token(args.access_token)
