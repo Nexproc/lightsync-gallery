@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>After Hours — Photographs by Nick Titcombe</title>
+  <meta
+    name="description"
+    content="Selected evening portraits and tabletop studies by Nick Titcombe."
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Hero Cover -->
+  <header id="hero-stage" class="hero-stage">
+    <div class="hero-copy">
+      <div id="collection-eyebrow" class="hero-eyebrow">Nick Titcombe</div>
+
+      <div class="hero-title-block">
+        <h1 id="collection-title" class="hero-title">After Hours</h1>
+        <p id="collection-subtitle" class="hero-subtitle">
+          Evening portraits and tabletop studies.
+        </p>
+
+        <div id="hero-meta-strip" class="hero-meta-strip">
+          <span id="meta-date-range">September – November 2026</span>
+          <span aria-hidden="true">·</span>
+          <span id="meta-photo-count">20 Photographs</span>
+        </div>
+
+        <div class="hero-actions">
+          <button id="btn-explore-collection" type="button" class="btn-primary">
+            Enter Gallery ↓
+          </button>
+          <button id="btn-hero-quickview" type="button" class="btn-ghost">
+            Highlights
+          </button>
+        </div>
+      </div>
+
+      <div class="hero-spacer" aria-hidden="true"></div>
+    </div>
+
+    <div id="hero-showcase" class="hero-showcase" aria-label="Featured photographs">
+      <div id="hero-slides-layer" class="hero-slides-layer"></div>
+      <div class="hero-controls-bar">
+        <span id="hero-caption-text" class="hero-caption-text"></span>
+        <div id="hero-dots" class="hero-dots" role="tablist" aria-label="Featured slide selector"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sticky Date & View Navigation -->
+  <nav id="gallery-nav" class="sticky-nav" aria-label="Gallery navigation">
+    <div class="sticky-nav-inner">
+      <div id="date-chapters-nav" class="date-chapters-nav" role="tablist" aria-label="Jump to date"></div>
+
+      <div class="toolbar-controls">
+        <div class="segmented-group" role="group" aria-label="View filter">
+          <button id="filter-all" type="button" class="seg-btn is-active" data-filter="all">
+            All
+          </button>
+          <button id="filter-highlights" type="button" class="seg-btn" data-filter="highlights">
+            Highlights
+          </button>
+          <button id="filter-favorites" type="button" class="seg-btn" data-filter="favorites">
+            Favorites
+          </button>
+        </div>
+
+        <button
+          id="btn-copy-favorites"
+          type="button"
+          class="seg-btn copy-selects-btn"
+          hidden
+          title="Copy saved favorite titles"
+        >
+          Share Favorites
+        </button>
+
+        <button
+          id="btn-theme-toggle"
+          type="button"
+          class="icon-toggle-btn"
+          aria-label="Toggle light or dark appearance"
+          title="Switch light / dark appearance"
+        >
+          ◐
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Right-Edge Date Scrubber -->
+  <aside id="timeline-scrubber" class="timeline-scrubber" aria-label="Date timeline"></aside>
+
+  <!-- Gallery Content -->
+  <main id="gallery-main" class="gallery-main">
+    <div id="chapters-container"></div>
+
+    <div id="pagination-sentinel" class="pagination-sentinel">
+      <button id="btn-load-more" type="button" class="btn-ghost" hidden>
+        Show More Photographs
+      </button>
+    </div>
+  </main>
+
+  <!-- Minimal Colophon Footer -->
+  <footer class="gallery-footer">
+    <span id="footer-copyright">© Nick Titcombe</span>
+    <button id="btn-back-top" type="button" class="back-top-btn">Back to top ↑</button>
+  </footer>
+
+  <!-- Fullscreen Lightbox -->
+  <div id="lightbox-modal" class="lightbox" role="dialog" aria-modal="true" aria-label="Photograph viewer">
+    <div class="lightbox-topbar">
+      <div class="lb-meta-left">
+        <span id="lb-counter" class="lb-counter">1 / 20</span>
+        <span id="lb-title" class="lb-title">—</span>
+      </div>
+      <div class="lb-actions">
+        <button id="lb-btn-zoom" type="button" class="lb-btn" title="Zoom (Z)">
+          ⊕ Zoom
+        </button>
+        <button id="lb-btn-fav" type="button" class="lb-btn" title="Save to Favorites (F)">
+          ♡ Favorite
+        </button>
+        <a id="lb-btn-download" class="lb-btn" href="#" download title="Download photograph">
+          ↓ Download
+        </a>
+        <button id="lb-btn-close" type="button" class="lb-btn" title="Close (Esc)">
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div id="lightbox-stage" class="lightbox-stage">
+      <button id="lb-prev" type="button" class="lb-nav-arrow lb-prev" aria-label="Previous photograph">←</button>
+      <div id="lb-img-wrap" class="lb-img-wrap">
+        <img id="lb-img" class="lb-img" src="" alt="" />
+      </div>
+      <button id="lb-next" type="button" class="lb-nav-arrow lb-next" aria-label="Next photograph">→</button>
+    </div>
+
+    <div id="lightbox-filmstrip" class="lightbox-filmstrip" aria-label="Thumbnail strip"></div>
+  </div>
+
+  <div id="toast-banner" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

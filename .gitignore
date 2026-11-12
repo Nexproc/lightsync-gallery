@@ -1,0 +1,13 @@
+# Local image staging directories (serve production media from object storage)
+public/
+exports/
+3k_exports/
+1600px_exports/
+
+# Python & OS artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+Thumbs.db
