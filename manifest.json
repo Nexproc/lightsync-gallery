@@ -1,8 +1,9 @@
 {
   "collection": {
-    "assetBaseUrl": "./3k_exports",
+    "assetBaseUrl": "https://storage.googleapis.com/lightsync-gallery-media-8f4a2c/3k_exports",
     "totalPhotos": 334,
-    "dateRange": "November 9, 2026 \u2013 November 12, 2026"
+    "dateRange": "November 9, 2026 \u2013 November 12, 2026",
+    "remoteManifestUrl": "https://storage.googleapis.com/lightsync-gallery-media-8f4a2c/manifest.json"
   },
   "chapters": [
     {
