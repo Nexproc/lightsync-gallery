@@ -34,6 +34,85 @@ def extract_exif_or_xmp_datetime(im: Image.Image, raw_head: bytes) -> str | None
     return None
 
 
+RAW_AND_SIDECAR_EXTS = {
+    ".xmp",
+    ".cr3",
+    ".cr2",
+    ".dng",
+    ".nef",
+    ".arw",
+    ".raf",
+    ".orf",
+    ".rw2",
+    ".jpg",
+    ".jpeg",
+}
+
+
+def extract_capture_timestamp_from_bytes(raw_head: bytes) -> str | None:
+    xmp_match = re.search(
+        rb'(?:exif:DateTimeOriginal|photoshop:DateCreated|xmp:CreateDate)[=">]+([0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2})',
+        raw_head,
+    )
+    if xmp_match:
+        return xmp_match.group(1).decode("ascii", errors="ignore").replace(" ", "T", 1)
+
+    exif_ascii = re.search(
+        rb"([12][0-9]{3}:[01][0-9]:[0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-5][0-9])",
+        raw_head,
+    )
+    if exif_ascii:
+        return (
+            exif_ascii.group(1)
+            .decode("ascii", errors="ignore")
+            .replace(":", "-", 2)
+            .replace(" ", "T", 1)
+        )
+    return None
+
+
+def load_capture_timestamps_from_dir(source_dir: Path | None) -> dict[str, str]:
+    if not source_dir or not source_dir.exists():
+        return {}
+
+    xmp_dates: dict[str, str] = {}
+    raw_dates: dict[str, str] = {}
+
+    for path in source_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        ext = path.suffix.lower()
+        if ext not in RAW_AND_SIDECAR_EXTS:
+            continue
+        stem = path.stem
+        if stem.startswith("rev_"):
+            stem = path.parent.name
+        target_map = xmp_dates if ext == ".xmp" else raw_dates
+        if stem in target_map:
+            continue
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(131072)
+            ts = extract_capture_timestamp_from_bytes(head)
+            if ts:
+                target_map[stem] = ts
+        except OSError:
+            continue
+
+    merged = dict(raw_dates)
+    merged.update(xmp_dates)
+    return merged
+
+
+def resolve_stem_capture_timestamp(stem: str, capture_map: dict[str, str]) -> str | None:
+    if not capture_map:
+        return None
+    if stem in capture_map:
+        return capture_map[stem]
+    base_stem = re.sub(r"_v\d+$", "", stem, flags=re.IGNORECASE)
+    return capture_map.get(base_stem)
+
+
 def extract_xmp_rating(raw_head: bytes) -> int | None:
     match = re.search(rb'xmp:Rating="([^"]+)"|<xmp:Rating>([^<]+)</xmp:Rating>', raw_head)
     if not match:
@@ -144,6 +223,7 @@ def inspect_image_bytes(
     data: bytes,
     filename: str,
     fallback_iso_ts: str,
+    explicit_capture_ts: str | None = None,
 ) -> dict[str, Any]:
     stem = Path(filename).stem
     raw_head = data[:65536]
@@ -152,7 +232,7 @@ def inspect_image_bytes(
         exif_dt = extract_exif_or_xmp_datetime(im, raw_head)
         lqip, dom_color = make_lqip_and_color(im)
 
-    iso_ts = exif_dt or fallback_iso_ts
+    iso_ts = exif_dt or explicit_capture_ts or fallback_iso_ts
     day_key = iso_ts[:10]
     rating = extract_xmp_rating(raw_head)
 
@@ -184,6 +264,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional JSON file from Drive listing to supply createdTime/modifiedTime when EXIF is stripped",
+    )
+    parser.add_argument(
+        "--exif-from-dir",
+        type=Path,
+        default=None,
+        help="Optional directory of original RAWs (.CR3/.DNG/.NEF/.ARW) or .xmp sidecars to recover capture timestamps when exported JPEGs lack EXIF",
     )
     parser.add_argument(
         "--out",
@@ -233,6 +319,8 @@ def main() -> None:
                     s = s.replace(":", "-", 2)
                 drive_ts_by_name[item["name"]] = s[:19]
 
+    capture_by_stem = load_capture_timestamps_from_dir(args.exif_from_dir)
+
     patterns = ["*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.webp", "*.WEBP"]
     all_paths: list[Path] = []
     for pat in patterns:
@@ -245,7 +333,10 @@ def main() -> None:
         if not fallback_dt:
             mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
             fallback_dt = mtime.strftime("%Y-%m-%dT%H:%M:%S")
-        raw_photos.append(inspect_image_bytes(path.read_bytes(), path.name, fallback_dt))
+        explicit_dt = resolve_stem_capture_timestamp(path.stem, capture_by_stem)
+        raw_photos.append(
+            inspect_image_bytes(path.read_bytes(), path.name, fallback_dt, explicit_dt)
+        )
 
     manifest = finalize_manifest_from_records(
         raw_photos,

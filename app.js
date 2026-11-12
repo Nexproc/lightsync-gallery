@@ -1,9 +1,9 @@
 /**
  * Lightsync Gallery — Single-Page Photograph Viewer
- * - Aspect-preserving editorial spreads & justified row solver
+ * - Aspect-preserving editorial spreads & fluid justified row solver
  * - Cursor-proximity 2x magnification on hero carousel selectors
- * - Progressive blur-up placeholders + IntersectionObserver lazy hydration
- * - Automatic chunked pagination & optional date navigation
+ * - Viewport-priority progressive blur-up hydration & DOM-preserving pagination
+ * - Smooth chapter jumping & responsive sticky date navigation
  */
 
 (() => {
@@ -17,6 +17,7 @@
   const PAGE_BATCH_SIZE = 30;
   const MAX_CAROUSEL_SLIDES = 7;
   const HERO_PROXIMITY_RADIUS_PX = 165;
+  const MAX_CONCURRENT_HYDRATIONS = 6;
 
   const state = {
     manifest: null,
@@ -88,12 +89,20 @@
     toast: document.getElementById("toast-banner"),
   };
 
+  const cardCache = new Map(); // photoId -> { figure, hiImg, btnFav }
+  const pendingHydrationSet = new Set();
+
   let imgObserver = null;
   let sentinelObserver = null;
-  let chapterSpyObserver = null;
   let toastTimer = null;
   let proximityRaf = 0;
+  let scrollRaf = 0;
+  let pumpRaf = 0;
+  let postJumpTimer = null;
+  let activeHydrations = 0;
   let lastContainerWidth = 0;
+  let lastDateNavKey = "";
+  let suppressScrollObserversUntil = 0;
 
   // =========================================================================
   // Preferences & URL State
@@ -159,6 +168,16 @@
     return state.photos;
   }
 
+  function syncNavHeight() {
+    if (!dom.galleryNav) return 58;
+    const h = Math.ceil(dom.galleryNav.getBoundingClientRect().height);
+    if (h >= 40) {
+      dom.html.style.setProperty("--nav-height", `${h}px`);
+      return h;
+    }
+    return 58;
+  }
+
   function updateToolbarCounts() {
     const favCount = state.favorites.size;
 
@@ -177,12 +196,33 @@
   // 1. Hero Carousel & 2x Cursor-Proximity Selector Magnification
   // =========================================================================
 
+  function estimateHexLuminance(hex) {
+    if (typeof hex !== "string" || !/^#[0-9a-f]{6}$/i.test(hex)) return 64;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  function isWellExposedForHero(photo) {
+    const lum = estimateHexLuminance(photo.dominantColor);
+    const lqipLen = (photo.lqip || "").length;
+    return lum >= 28 && lqipLen >= 300;
+  }
+
   function pickCarouselSlides() {
-    const landscapes = state.photos.filter((p) => p.hero && p.orientation === "landscape");
-    const pool =
-      landscapes.length > 0
-        ? landscapes
-        : state.photos.filter((p) => p.orientation === "landscape");
+    const heroLandscapes = state.photos.filter((p) => p.hero && p.orientation === "landscape");
+    const brightHeroLandscapes = heroLandscapes.filter(isWellExposedForHero);
+
+    let pool = brightHeroLandscapes;
+    if (pool.length < 3) {
+      pool = heroLandscapes.length > 0
+        ? heroLandscapes
+        : state.photos.filter((p) => p.orientation === "landscape" && isWellExposedForHero(p));
+    }
+    if (pool.length === 0) {
+      pool = state.photos.filter((p) => p.orientation === "landscape");
+    }
     const source = pool.length > 0 ? pool : state.photos;
 
     if (source.length <= MAX_CAROUSEL_SLIDES) {
@@ -197,6 +237,46 @@
     return sampled;
   }
 
+  function ensureHeroSlideLoaded(slideIdx, isPriority = false) {
+    const slides = dom.heroSlidesLayer.querySelectorAll(".hero-slide");
+    const count = slides.length;
+    if (!count) return;
+    const normIdx = ((slideIdx % count) + count) % count;
+    const slide = slides[normIdx];
+    const photo = state.heroPhotos[normIdx];
+    if (!slide || !photo) return;
+
+    const hiImg = slide.querySelector(".hero-hi");
+    if (!hiImg || hiImg.dataset.started === "1") return;
+
+    hiImg.dataset.started = "1";
+    if (isPriority && "fetchPriority" in hiImg) {
+      hiImg.fetchPriority = "high";
+    }
+
+    const reveal = () => {
+      slide.classList.add("is-loaded");
+      state.hydratedIds.add(photo.id);
+      if (isPriority && count > 1) {
+        ensureHeroSlideLoaded(normIdx + 1, false);
+      }
+    };
+
+    hiImg.addEventListener(
+      "load",
+      () => {
+        if (typeof hiImg.decode === "function") {
+          hiImg.decode().then(reveal).catch(reveal);
+        } else {
+          reveal();
+        }
+      },
+      { once: true }
+    );
+    hiImg.addEventListener("error", reveal, { once: true });
+    hiImg.src = resolvePhotoUrl(photo);
+  }
+
   function renderHeroCover() {
     state.heroPhotos = pickCarouselSlides();
 
@@ -204,22 +284,30 @@
       state.heroSlideIdx = 0;
     }
 
-    dom.heroSlidesLayer.innerHTML = "";
-    dom.heroDots.innerHTML = "";
+    dom.heroSlidesLayer.replaceChildren();
+    dom.heroDots.replaceChildren();
 
     state.heroPhotos.forEach((photo, idx) => {
       const slide = document.createElement("div");
       slide.className = `hero-slide${idx === state.heroSlideIdx ? " is-active" : ""}`;
       slide.style.backgroundColor = photo.dominantColor || "#141210";
 
+      if (photo.lqip) {
+        const lqipImg = document.createElement("img");
+        lqipImg.className = "hero-lqip";
+        lqipImg.src = photo.lqip;
+        lqipImg.alt = "";
+        lqipImg.setAttribute("aria-hidden", "true");
+        slide.appendChild(lqipImg);
+      }
+
       const img = document.createElement("img");
-      img.src = resolvePhotoUrl(photo);
+      img.className = "hero-hi";
       img.alt = photo.filename;
       img.decoding = "async";
-      img.addEventListener("load", () => state.hydratedIds.add(photo.id));
-      img.addEventListener("click", () => openLightboxByPhotoId(photo.id));
-
       slide.appendChild(img);
+
+      slide.addEventListener("click", () => openLightboxByPhotoId(photo.id));
       dom.heroSlidesLayer.appendChild(slide);
 
       const dot = document.createElement("button");
@@ -242,13 +330,14 @@
       dom.heroDots.appendChild(dot);
     });
 
+    ensureHeroSlideLoaded(state.heroSlideIdx, true);
     restartHeroSlideshow();
   }
 
   function setActiveHeroSlide(nextIdx) {
     const count = state.heroPhotos.length;
     if (!count) return;
-    state.heroSlideIdx = (nextIdx + count) % count;
+    state.heroSlideIdx = ((nextIdx % count) + count) % count;
 
     const slides = dom.heroSlidesLayer.querySelectorAll(".hero-slide");
     slides.forEach((el, idx) => el.classList.toggle("is-active", idx === state.heroSlideIdx));
@@ -259,6 +348,8 @@
       dot.classList.toggle("is-active", active);
       dot.setAttribute("aria-selected", active ? "true" : "false");
     });
+
+    ensureHeroSlideLoaded(state.heroSlideIdx, true);
   }
 
   function restartHeroSlideshow() {
@@ -309,9 +400,6 @@
   // =========================================================================
 
   function renderDateNavigation(filteredPhotos) {
-    dom.dateChaptersNav.innerHTML = "";
-    dom.timelineScrubber.innerHTML = "";
-
     const countsByDate = new Map();
     for (const p of filteredPhotos) {
       countsByDate.set(p.date, (countsByDate.get(p.date) || 0) + 1);
@@ -319,16 +407,33 @@
 
     const activeChapters = state.chapters.filter((ch) => countsByDate.has(ch.date));
     if (activeChapters.length <= 1) {
+      lastDateNavKey = "";
+      dom.dateChaptersNav.replaceChildren();
+      dom.timelineScrubber.replaceChildren();
       dom.dateChaptersNav.hidden = true;
       dom.timelineScrubber.hidden = true;
       return;
     }
 
+    if (!state.activeDate || !countsByDate.has(state.activeDate)) {
+      state.activeDate = activeChapters[0].date;
+    }
+
+    const navKey = activeChapters.map((ch) => `${ch.date}:${ch.label}`).join("|");
     dom.dateChaptersNav.hidden = false;
     dom.timelineScrubber.hidden = false;
 
-    activeChapters.forEach((ch, idx) => {
-      const isCurrent = state.activeDate ? state.activeDate === ch.date : idx === 0;
+    if (navKey === lastDateNavKey) {
+      highlightActiveDateUI(state.activeDate, false);
+      return;
+    }
+
+    lastDateNavKey = navKey;
+    dom.dateChaptersNav.replaceChildren();
+    dom.timelineScrubber.replaceChildren();
+
+    activeChapters.forEach((ch) => {
+      const isCurrent = state.activeDate === ch.date;
 
       const pill = document.createElement("button");
       pill.type = "button";
@@ -351,35 +456,115 @@
     });
   }
 
+  function highlightActiveDateUI(dateKey, centerStrip = true) {
+    let activePill = null;
+    dom.dateChaptersNav.querySelectorAll(".nav-pill").forEach((btn) => {
+      const match = btn.dataset.date === dateKey;
+      btn.classList.toggle("is-active", match);
+      if (match) activePill = btn;
+    });
+
+    dom.timelineScrubber.querySelectorAll(".scrubber-tick").forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.date === dateKey);
+    });
+
+    if (centerStrip && activePill && !dom.dateChaptersNav.hidden) {
+      const strip = dom.dateChaptersNav;
+      if (strip.scrollWidth > strip.clientWidth + 4) {
+        const targetLeft =
+          activePill.offsetLeft - (strip.clientWidth - activePill.offsetWidth) * 0.5;
+        strip.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+      }
+    }
+  }
+
+  function scheduleHydrationAfterJump(delayMs = 380) {
+    clearTimeout(postJumpTimer);
+    postJumpTimer = setTimeout(() => {
+      suppressScrollObserversUntil = 0;
+      schedulePumpHydration();
+      checkSentinelIfVisible();
+    }, delayMs);
+  }
+
   function jumpToDateChapter(dateKey) {
     const filtered = getFilteredPhotos();
     const firstIdx = filtered.findIndex((p) => p.date === dateKey);
     if (firstIdx === -1) return;
 
-    const minNeeded = Math.min(filtered.length, firstIdx + PAGE_BATCH_SIZE);
+    let minNeeded = Math.min(filtered.length, firstIdx + PAGE_BATCH_SIZE);
+    if (filtered.length - minNeeded <= PAGE_BATCH_SIZE) {
+      minNeeded = filtered.length;
+    }
+
+    suppressScrollObserversUntil = performance.now() + 900;
+
     if (state.visibleCount < minNeeded) {
       state.visibleCount = minNeeded;
       renderGallery();
     }
 
     state.activeDate = dateKey;
-    highlightActiveDateUI(dateKey);
+    highlightActiveDateUI(dateKey, true);
 
     requestAnimationFrame(() => {
+      const navH = syncNavHeight();
       const section = document.getElementById(`chapter-${dateKey}`);
-      if (section) {
-        section.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (!section) return;
+
+      const targetTop = Math.max(
+        0,
+        window.scrollY + section.getBoundingClientRect().top - navH - 12
+      );
+      const dist = Math.abs(targetTop - window.scrollY);
+
+      if (dist > window.innerHeight * 2.5) {
+        const approachOffset = Math.min(220, Math.round(window.innerHeight * 0.28));
+        const approachTop =
+          targetTop > window.scrollY
+            ? Math.max(0, targetTop - approachOffset)
+            : targetTop + approachOffset;
+        window.scrollTo({ top: approachTop, behavior: "instant" });
+        requestAnimationFrame(() => {
+          const settledNavH = syncNavHeight();
+          const finalTop = Math.max(
+            0,
+            window.scrollY + section.getBoundingClientRect().top - settledNavH - 12
+          );
+          window.scrollTo({ top: finalTop, behavior: "smooth" });
+          scheduleHydrationAfterJump(420);
+        });
+      } else {
+        window.scrollTo({ top: targetTop, behavior: "smooth" });
+        scheduleHydrationAfterJump(420);
       }
     });
   }
 
-  function highlightActiveDateUI(dateKey) {
-    dom.dateChaptersNav.querySelectorAll(".nav-pill").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.date === dateKey);
-    });
-    dom.timelineScrubber.querySelectorAll(".scrubber-tick").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.date === dateKey);
-    });
+  function updateActiveChapterFromScroll() {
+    if (performance.now() < suppressScrollObserversUntil) return;
+    if (dom.dateChaptersNav.hidden) return;
+
+    const sections = dom.chaptersContainer.querySelectorAll(".date-chapter");
+    if (!sections.length) return;
+
+    const navH = dom.galleryNav ? dom.galleryNav.getBoundingClientRect().height : 58;
+    const thresholdY = navH + 56;
+
+    let candidate = sections[0].dataset.date;
+    for (const sec of sections) {
+      const top = sec.getBoundingClientRect().top;
+      if (top <= thresholdY) {
+        candidate = sec.dataset.date;
+      } else {
+        break;
+      }
+    }
+
+    if (candidate && candidate !== state.activeDate) {
+      state.activeDate = candidate;
+      highlightActiveDateUI(candidate, true);
+    }
   }
 
   // =========================================================================
@@ -387,15 +572,31 @@
   // =========================================================================
 
   function getContainerInnerWidth() {
-    const rect = dom.chaptersContainer.getBoundingClientRect();
-    if (rect.width > 80) return Math.floor(rect.width);
-    return Math.min(1400, Math.max(300, window.innerWidth - 64));
+    if (dom.galleryMain) {
+      const style = window.getComputedStyle(dom.galleryMain);
+      const padX =
+        (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const inner = dom.galleryMain.clientWidth - padX;
+      if (inner > 80) return Math.floor(inner);
+    }
+    const fallbackViewport = document.documentElement.clientWidth || window.innerWidth;
+    return Math.min(1400, Math.max(280, fallbackViewport - 32));
   }
 
   function getTargetRowHeight(containerWidth) {
     if (containerWidth < 560) return 230;
     if (containerWidth < 900) return 300;
     return 390;
+  }
+
+  function makeRowBlock(items, height, clamped) {
+    const ids = items.map((x) => x.photo.id).join(",");
+    return {
+      type: "row",
+      clamped: Boolean(clamped),
+      key: `r:${clamped ? 1 : 0}:${Math.round(height * 10)}:${ids}`,
+      items,
+    };
   }
 
   function solveJustifiedRows(photos, containerWidth, gutter) {
@@ -416,26 +617,33 @@
       const isLast = i === photos.length - 1;
 
       if (naturalH <= targetH * 1.16 || row.length >= 4) {
-        blocks.push({
-          type: "row",
-          items: row.map((item) => ({
-            photo: item,
-            width: item.aspect * naturalH,
-            height: naturalH,
-          })),
-        });
+        blocks.push(
+          makeRowBlock(
+            row.map((item) => ({
+              photo: item,
+              width: item.aspect * naturalH,
+              height: naturalH,
+            })),
+            naturalH,
+            false
+          )
+        );
         row = [];
         aspectSum = 0;
       } else if (isLast) {
         const clampedH = Math.min(naturalH, maxSingleH);
-        blocks.push({
-          type: "row",
-          items: row.map((item) => ({
-            photo: item,
-            width: item.aspect * clampedH,
-            height: clampedH,
-          })),
-        });
+        const isClamped = clampedH < naturalH - 0.5;
+        blocks.push(
+          makeRowBlock(
+            row.map((item) => ({
+              photo: item,
+              width: item.aspect * clampedH,
+              height: clampedH,
+            })),
+            clampedH,
+            isClamped
+          )
+        );
       }
     }
 
@@ -472,6 +680,7 @@
     return {
       type: "spread",
       heroOnRight,
+      key: `s:${heroOnRight ? 1 : 0}:${Math.round(totalH * 10)}:${hero.id}:${companions[0].id},${companions[1].id}`,
       heroItem: { photo: hero, width: wHero, height: totalH },
       stackWidth: wStack,
       stackItems: [
@@ -530,90 +739,205 @@
   }
 
   // =========================================================================
-  // 4. Photo Cards & Lazy Hydration
+  // 4. Cached Photo Cards & Viewport-Priority Hydration Queue
   // =========================================================================
 
-  function createPhotoCard(photo, widthPx, heightPx) {
-    const figure = document.createElement("figure");
-    figure.className = "photo-card";
-    figure.style.margin = "0";
-    figure.style.setProperty("--tile-bg", photo.dominantColor || "#1c1917");
-    figure.style.width = `${widthPx.toFixed(2)}px`;
-    figure.style.height = `${heightPx.toFixed(2)}px`;
-
-    const lqipImg = document.createElement("img");
-    lqipImg.className = "photo-lqip";
-    lqipImg.src = photo.lqip;
-    lqipImg.alt = "";
-    lqipImg.setAttribute("aria-hidden", "true");
-    figure.appendChild(lqipImg);
-
-    const hiImg = document.createElement("img");
-    hiImg.className = "photo-hi";
-    hiImg.alt = photo.filename;
-    hiImg.decoding = "async";
-    hiImg.dataset.photoId = photo.id;
-
-    if (state.hydratedIds.has(photo.id)) {
-      hiImg.src = resolvePhotoUrl(photo);
-      figure.classList.add("is-loaded");
-    } else if (imgObserver) {
-      imgObserver.observe(hiImg);
-    }
-
-    figure.appendChild(hiImg);
-
-    const overlay = document.createElement("div");
-    overlay.className = "card-overlay";
-
-    const topActions = document.createElement("div");
-    topActions.className = "card-top-actions";
-
-    const isFav = state.favorites.has(photo.id);
-    const btnFav = document.createElement("button");
-    btnFav.type = "button";
-    btnFav.className = `card-action-btn${isFav ? " is-fav" : ""}`;
-    btnFav.title = isFav ? "Remove from Favorites" : "Save to Favorites";
-    btnFav.textContent = isFav ? "♥" : "♡";
-    btnFav.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      togglePhotoFavorite(photo.id, btnFav);
-    });
-
-    const btnDl = document.createElement("a");
-    btnDl.className = "card-action-btn";
-    btnDl.href = resolvePhotoUrl(photo);
-    btnDl.download = photo.filename;
-    btnDl.title = "Download photograph";
-    btnDl.textContent = "↓";
-    btnDl.addEventListener("click", (ev) => ev.stopPropagation());
-
-    topActions.append(btnFav, btnDl);
-    overlay.appendChild(topActions);
-    figure.appendChild(overlay);
-
-    figure.addEventListener("click", () => openLightboxByPhotoId(photo.id));
-
-    return figure;
+  function syncCardFavoriteButton(photoId) {
+    const cached = cardCache.get(photoId);
+    if (!cached) return;
+    const isFav = state.favorites.has(photoId);
+    cached.btnFav.classList.toggle("is-fav", isFav);
+    cached.btnFav.title = isFav ? "Remove from Favorites" : "Save to Favorites";
+    cached.btnFav.textContent = isFav ? "♥" : "♡";
   }
 
-  function hydrateImageElement(imgEl) {
+  function getOrCreatePhotoCard(photo) {
+    let entry = cardCache.get(photo.id);
+    if (!entry) {
+      const figure = document.createElement("figure");
+      figure.className = "photo-card";
+      figure.style.margin = "0";
+      figure.style.setProperty("--tile-bg", photo.dominantColor || "#1c1917");
+
+      const lqipImg = document.createElement("img");
+      lqipImg.className = "photo-lqip";
+      lqipImg.src = photo.lqip;
+      lqipImg.alt = "";
+      lqipImg.setAttribute("aria-hidden", "true");
+      figure.appendChild(lqipImg);
+
+      const hiImg = document.createElement("img");
+      hiImg.className = "photo-hi";
+      hiImg.alt = photo.filename;
+      hiImg.decoding = "async";
+      hiImg.dataset.photoId = photo.id;
+      figure.appendChild(hiImg);
+
+      const overlay = document.createElement("div");
+      overlay.className = "card-overlay";
+
+      const topActions = document.createElement("div");
+      topActions.className = "card-top-actions";
+
+      const btnFav = document.createElement("button");
+      btnFav.type = "button";
+      btnFav.className = "card-action-btn";
+      btnFav.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        togglePhotoFavorite(photo.id);
+      });
+
+      const btnDl = document.createElement("a");
+      btnDl.className = "card-action-btn";
+      btnDl.href = resolvePhotoUrl(photo);
+      btnDl.download = photo.filename;
+      btnDl.title = "Download photograph";
+      btnDl.textContent = "↓";
+      btnDl.addEventListener("click", (ev) => ev.stopPropagation());
+
+      topActions.append(btnFav, btnDl);
+      overlay.appendChild(topActions);
+      figure.appendChild(overlay);
+
+      figure.addEventListener("click", () => openLightboxByPhotoId(photo.id));
+
+      entry = { figure, hiImg, btnFav };
+      cardCache.set(photo.id, entry);
+    }
+
+    syncCardFavoriteButton(photo.id);
+
+    if (state.hydratedIds.has(photo.id)) {
+      if (!entry.hiImg.getAttribute("src")) {
+        entry.hiImg.src = resolvePhotoUrl(photo);
+      }
+      entry.figure.classList.add("is-loaded");
+    } else if (
+      !entry.hiImg.getAttribute("src") &&
+      !pendingHydrationSet.has(entry.hiImg) &&
+      imgObserver
+    ) {
+      imgObserver.observe(entry.hiImg);
+    }
+
+    return entry.figure;
+  }
+
+  function startImageHydration(imgEl) {
     const photoId = imgEl.dataset.photoId;
     if (!photoId || imgEl.getAttribute("src")) return;
     const photo = state.photos.find((p) => p.id === photoId);
     if (!photo) return;
 
-    imgEl.src = resolvePhotoUrl(photo);
-    const reveal = () => {
-      const card = imgEl.closest(".photo-card");
-      if (card) card.classList.add("is-loaded");
-      state.hydratedIds.add(photoId);
+    activeHydrations += 1;
+    let settled = false;
+
+    const finalize = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(safetyTimer);
+      activeHydrations = Math.max(0, activeHydrations - 1);
+
+      if (ok) {
+        const card = imgEl.closest(".photo-card");
+        if (card) card.classList.add("is-loaded");
+        state.hydratedIds.add(photoId);
+      } else {
+        imgEl.removeAttribute("src");
+        if (imgEl.isConnected && imgObserver) {
+          imgObserver.observe(imgEl);
+        }
+      }
+
+      schedulePumpHydration();
     };
 
-    if (typeof imgEl.decode === "function") {
-      imgEl.decode().then(reveal).catch(reveal);
-    } else {
-      imgEl.addEventListener("load", reveal, { once: true });
+    const safetyTimer = setTimeout(() => {
+      finalize(Boolean(imgEl.complete && imgEl.naturalWidth > 0));
+    }, 9000);
+
+    const onLoaded = () => {
+      if (typeof imgEl.decode === "function") {
+        imgEl
+          .decode()
+          .then(() => finalize(true))
+          .catch(() => finalize(true));
+      } else {
+        finalize(true);
+      }
+    };
+
+    imgEl.addEventListener("load", onLoaded, { once: true });
+    imgEl.addEventListener("error", () => finalize(false), { once: true });
+    imgEl.src = resolvePhotoUrl(photo);
+
+    if (imgEl.complete && imgEl.naturalWidth > 0) {
+      onLoaded();
+    }
+  }
+
+  function schedulePumpHydration() {
+    if (pumpRaf) return;
+    pumpRaf = requestAnimationFrame(() => {
+      pumpRaf = 0;
+      pumpHydrationQueue();
+    });
+  }
+
+  function pumpHydrationQueue() {
+    if (!pendingHydrationSet.size) return;
+
+    const now = performance.now();
+    if (now < suppressScrollObserversUntil) {
+      scheduleHydrationAfterJump(Math.ceil(suppressScrollObserversUntil - now) + 30);
+      return;
+    }
+
+    if (activeHydrations >= MAX_CONCURRENT_HYDRATIONS) return;
+
+    const vh = window.innerHeight || 800;
+    const centerV = vh * 0.5;
+    const candidates = [];
+
+    for (const imgEl of pendingHydrationSet) {
+      if (!imgEl.isConnected || imgEl.getAttribute("src")) {
+        pendingHydrationSet.delete(imgEl);
+        continue;
+      }
+
+      const rect = imgEl.getBoundingClientRect();
+      if (rect.bottom < -520 || rect.top > vh + 520) {
+        pendingHydrationSet.delete(imgEl);
+        if (imgObserver) imgObserver.observe(imgEl);
+        continue;
+      }
+
+      const inViewport = rect.bottom >= 0 && rect.top <= vh;
+      const midY = (rect.top + rect.bottom) * 0.5;
+      const score = (inViewport ? 0 : 10000) + Math.abs(midY - centerV);
+      candidates.push({ imgEl, score });
+    }
+
+    candidates.sort((a, b) => a.score - b.score);
+
+    for (const item of candidates) {
+      if (activeHydrations >= MAX_CONCURRENT_HYDRATIONS) break;
+      pendingHydrationSet.delete(item.imgEl);
+      startImageHydration(item.imgEl);
+    }
+  }
+
+  function checkSentinelIfVisible() {
+    if (performance.now() < suppressScrollObserversUntil) return;
+    if (!dom.paginationSentinel) return;
+    const total = getFilteredPhotos().length;
+    if (state.visibleCount >= total) return;
+
+    const rect = dom.paginationSentinel.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    if (rect.top <= vh + 360) {
+      state.visibleCount = Math.min(total, state.visibleCount + PAGE_BATCH_SIZE);
+      renderGallery();
     }
   }
 
@@ -624,16 +948,18 @@
         for (const entry of entries) {
           if (entry.isIntersecting) {
             imgObserver.unobserve(entry.target);
-            hydrateImageElement(entry.target);
+            pendingHydrationSet.add(entry.target);
           }
         }
+        schedulePumpHydration();
       },
-      { rootMargin: "360px 0px" }
+      { rootMargin: "300px 0px" }
     );
 
     if (sentinelObserver) sentinelObserver.disconnect();
     sentinelObserver = new IntersectionObserver(
       (entries) => {
+        if (performance.now() < suppressScrollObserversUntil) return;
         for (const entry of entries) {
           if (entry.isIntersecting) {
             const total = getFilteredPhotos().length;
@@ -644,149 +970,212 @@
           }
         }
       },
-      { rootMargin: "360px 0px" }
+      { rootMargin: "420px 0px" }
     );
     sentinelObserver.observe(dom.paginationSentinel);
   }
 
-  function setupChapterScrollSpy() {
-    if (chapterSpyObserver) chapterSpyObserver.disconnect();
-    chapterSpyObserver = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible.length > 0) {
-          const dKey = visible[0].target.dataset.date;
-          if (dKey && dKey !== state.activeDate) {
-            state.activeDate = dKey;
-            highlightActiveDateUI(dKey);
-          }
-        }
-      },
-      { rootMargin: "-18% 0px -62% 0px", threshold: 0 }
-    );
+  // =========================================================================
+  // 5. Incremental Non-Destructive Gallery Rendering
+  // =========================================================================
 
-    dom.chaptersContainer.querySelectorAll(".date-chapter").forEach((sec) => {
-      chapterSpyObserver.observe(sec);
-    });
+  function buildSingleBlockDOM(block) {
+    if (block.type === "spread") {
+      const spreadEl = document.createElement("div");
+      spreadEl.className = "editorial-spread";
+      spreadEl.dataset.blockKey = block.key;
+
+      const heroCard = getOrCreatePhotoCard(block.heroItem.photo);
+      heroCard.style.flex = `${block.heroItem.width.toFixed(3)} 1 0%`;
+      heroCard.style.width = "auto";
+      heroCard.style.height = `${block.heroItem.height.toFixed(2)}px`;
+
+      const stackEl = document.createElement("div");
+      stackEl.className = "spread-stack";
+      stackEl.style.flex = `${block.stackWidth.toFixed(3)} 1 0%`;
+      stackEl.style.width = "auto";
+
+      for (const sItem of block.stackItems) {
+        const sCard = getOrCreatePhotoCard(sItem.photo);
+        sCard.style.flex = `0 0 ${sItem.height.toFixed(2)}px`;
+        sCard.style.width = "100%";
+        sCard.style.height = `${sItem.height.toFixed(2)}px`;
+        stackEl.appendChild(sCard);
+      }
+
+      if (block.heroOnRight) {
+        spreadEl.append(stackEl, heroCard);
+      } else {
+        spreadEl.append(heroCard, stackEl);
+      }
+      return spreadEl;
+    }
+
+    const rowEl = document.createElement("div");
+    rowEl.className = "gallery-row";
+    rowEl.dataset.blockKey = block.key;
+
+    for (const rItem of block.items) {
+      const card = getOrCreatePhotoCard(rItem.photo);
+      if (block.clamped) {
+        card.style.flex = `0 1 ${rItem.width.toFixed(2)}px`;
+        card.style.width = `${rItem.width.toFixed(2)}px`;
+      } else {
+        card.style.flex = `${rItem.photo.aspect} 1 0%`;
+        card.style.width = "auto";
+      }
+      card.style.height = `${rItem.height.toFixed(2)}px`;
+      rowEl.appendChild(card);
+    }
+
+    return rowEl;
   }
 
-  // =========================================================================
-  // 5. Render Gallery Grid (Date Dividers Only When Multiple Dates Exist)
-  // =========================================================================
-
-  function buildBlocksDOM(blocks) {
-    const rowsWrap = document.createElement("div");
-    rowsWrap.className = "chapter-rows";
-
-    for (const block of blocks) {
-      if (block.type === "spread") {
-        const spreadEl = document.createElement("div");
-        spreadEl.className = "editorial-spread";
-
-        const heroCard = createPhotoCard(
-          block.heroItem.photo,
-          block.heroItem.width,
-          block.heroItem.height
-        );
-
-        const stackEl = document.createElement("div");
-        stackEl.className = "spread-stack";
-        stackEl.style.width = `${block.stackWidth.toFixed(2)}px`;
-        for (const sItem of block.stackItems) {
-          stackEl.appendChild(createPhotoCard(sItem.photo, sItem.width, sItem.height));
-        }
-
-        if (block.heroOnRight) {
-          spreadEl.append(stackEl, heroCard);
-        } else {
-          spreadEl.append(heroCard, stackEl);
-        }
-        rowsWrap.appendChild(spreadEl);
+  function reconcileBlocksContainer(rowsWrap, blocks) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const existing = rowsWrap.children[i];
+      if (existing && existing.dataset.blockKey === block.key) {
+        continue;
+      }
+      const nextEl = buildSingleBlockDOM(block);
+      if (existing) {
+        rowsWrap.replaceChild(nextEl, existing);
       } else {
-        const rowEl = document.createElement("div");
-        rowEl.className = "gallery-row";
-        for (const rItem of block.items) {
-          rowEl.appendChild(createPhotoCard(rItem.photo, rItem.width, rItem.height));
-        }
-        rowsWrap.appendChild(rowEl);
+        rowsWrap.appendChild(nextEl);
       }
     }
 
-    return rowsWrap;
+    while (rowsWrap.children.length > blocks.length) {
+      rowsWrap.lastElementChild.remove();
+    }
   }
 
   function renderGallery() {
     const filtered = getFilteredPhotos();
     updateToolbarCounts();
     renderDateNavigation(filtered);
-
-    dom.chaptersContainer.innerHTML = "";
+    syncNavHeight();
 
     if (filtered.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.innerHTML = `
-        <h3>No saved favorites yet</h3>
-        <p>Click ♡ on any photograph to add it to your favorites.</p>
-      `;
-      dom.chaptersContainer.appendChild(empty);
+      if (dom.chaptersContainer.dataset.mode !== "empty") {
+        dom.chaptersContainer.replaceChildren();
+        dom.chaptersContainer.dataset.mode = "empty";
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.innerHTML = `
+          <h3>No saved favorites yet</h3>
+          <p>Click ♡ on any photograph to add it to your favorites.</p>
+        `;
+        dom.chaptersContainer.appendChild(empty);
+      }
       dom.btnLoadMore.hidden = true;
       return;
     }
 
-    const visibleSlice = filtered.slice(0, state.visibleCount);
     const containerWidth = getContainerInnerWidth();
     lastContainerWidth = containerWidth;
     const gutter = 12;
 
+    const visibleSlice = filtered.slice(0, state.visibleCount);
     const totalDistinctDates = new Set(filtered.map((p) => p.date)).size;
 
     if (totalDistinctDates <= 1) {
+      if (dom.chaptersContainer.dataset.mode !== "single") {
+        dom.chaptersContainer.replaceChildren();
+        dom.chaptersContainer.dataset.mode = "single";
+        const rowsWrap = document.createElement("div");
+        rowsWrap.className = "chapter-rows";
+        dom.chaptersContainer.appendChild(rowsWrap);
+      }
+      const rowsWrap = dom.chaptersContainer.firstElementChild;
       const blocks = solveAutoLayout(visibleSlice, containerWidth, gutter);
-      dom.chaptersContainer.appendChild(buildBlocksDOM(blocks));
+      reconcileBlocksContainer(rowsWrap, blocks);
     } else {
+      if (dom.chaptersContainer.dataset.mode !== "chapters") {
+        dom.chaptersContainer.replaceChildren();
+        dom.chaptersContainer.dataset.mode = "chapters";
+      }
+
+      const existingByDate = new Map();
+      for (const child of Array.from(dom.chaptersContainer.children)) {
+        if (child.dataset.date) {
+          existingByDate.set(child.dataset.date, child);
+        }
+      }
+
+      const totalByDate = new Map();
+      for (const p of filtered) {
+        totalByDate.set(p.date, (totalByDate.get(p.date) || 0) + 1);
+      }
+
+      const activeSections = [];
       for (const ch of state.chapters) {
         const chPhotos = visibleSlice.filter((p) => p.date === ch.date);
         if (chPhotos.length === 0) continue;
 
-        const totalInDate = filtered.filter((p) => p.date === ch.date).length;
+        let section = existingByDate.get(ch.date);
+        let rowsWrap = null;
+        let countSpan = null;
 
-        const section = document.createElement("section");
-        section.className = "date-chapter";
-        section.id = `chapter-${ch.date}`;
-        section.dataset.date = ch.date;
+        if (!section) {
+          section = document.createElement("section");
+          section.className = "date-chapter";
+          section.id = `chapter-${ch.date}`;
+          section.dataset.date = ch.date;
 
-        const header = document.createElement("div");
-        header.className = "chapter-header";
+          const header = document.createElement("div");
+          header.className = "chapter-header";
 
-        const dateSpan = document.createElement("span");
-        dateSpan.className = "chapter-date-tag";
-        dateSpan.textContent = ch.fullDate || ch.date;
+          const dateSpan = document.createElement("span");
+          dateSpan.className = "chapter-date-tag";
+          dateSpan.textContent = ch.fullDate || ch.date;
 
-        const countSpan = document.createElement("span");
-        countSpan.className = "chapter-count-tag";
-        countSpan.textContent = `${totalInDate}`;
+          countSpan = document.createElement("span");
+          countSpan.className = "chapter-count-tag";
 
-        header.append(dateSpan, countSpan);
-        section.appendChild(header);
+          header.append(dateSpan, countSpan);
+
+          rowsWrap = document.createElement("div");
+          rowsWrap.className = "chapter-rows";
+
+          section.append(header, rowsWrap);
+        } else {
+          existingByDate.delete(ch.date);
+          countSpan = section.querySelector(".chapter-count-tag");
+          rowsWrap = section.querySelector(".chapter-rows");
+        }
+
+        if (countSpan) {
+          countSpan.textContent = `${totalByDate.get(ch.date) || chPhotos.length}`;
+        }
 
         const blocks = solveAutoLayout(chPhotos, containerWidth, gutter);
-        section.appendChild(buildBlocksDOM(blocks));
-        dom.chaptersContainer.appendChild(section);
+        reconcileBlocksContainer(rowsWrap, blocks);
+        activeSections.push(section);
       }
-      setupChapterScrollSpy();
+
+      for (const staleSection of existingByDate.values()) {
+        staleSection.remove();
+      }
+
+      for (let i = 0; i < activeSections.length; i++) {
+        const sec = activeSections[i];
+        if (dom.chaptersContainer.children[i] !== sec) {
+          dom.chaptersContainer.insertBefore(sec, dom.chaptersContainer.children[i] || null);
+        }
+      }
     }
 
     dom.btnLoadMore.hidden = visibleSlice.length >= filtered.length;
+    schedulePumpHydration();
   }
 
   // =========================================================================
   // 6. Favorites & Lightbox
   // =========================================================================
 
-  function togglePhotoFavorite(photoId, cardBtn = null) {
+  function togglePhotoFavorite(photoId) {
     const photo = state.photos.find((p) => p.id === photoId);
     if (!photo) return;
 
@@ -796,16 +1185,13 @@
       state.favorites.add(photoId);
     }
     saveFavorites();
+    syncCardFavoriteButton(photoId);
 
     if (state.filter === "favorites") {
       renderGallery();
     } else {
-      if (cardBtn) {
-        const fav = state.favorites.has(photoId);
-        cardBtn.classList.toggle("is-fav", fav);
-        cardBtn.textContent = fav ? "♥" : "♡";
-      }
       updateToolbarCounts();
+      syncNavHeight();
     }
 
     if (state.lightboxOpen) syncLightboxControls();
@@ -847,9 +1233,24 @@
     state.lightboxZoomed = zoomed;
     dom.lbImgWrap.classList.toggle("is-zoomed", zoomed);
     dom.lbBtnZoom.classList.toggle("is-active", zoomed);
-    dom.lbBtnZoom.textContent = zoomed ? "⊖ Fit" : "⊕ Zoom";
+    dom.lbBtnZoom.innerHTML = zoomed
+      ? '<span aria-hidden="true">⊖</span><span class="lb-btn-label">Fit</span>'
+      : '<span aria-hidden="true">⊕</span><span class="lb-btn-label">Zoom</span>';
     if (!zoomed) {
       dom.lbImg.style.transformOrigin = "center center";
+    }
+  }
+
+  function preloadNeighborLightboxSlides() {
+    const len = state.lightboxList.length;
+    if (len <= 1) return;
+    for (const delta of [1, -1]) {
+      const neighbor = state.lightboxList[(state.lightboxIdx + delta + len) % len];
+      if (neighbor && !state.hydratedIds.has(neighbor.id)) {
+        const pre = new Image();
+        pre.decoding = "async";
+        pre.src = resolvePhotoUrl(neighbor);
+      }
     }
   }
 
@@ -869,14 +1270,19 @@
     dom.lbBtnDownload.download = photo.filename;
 
     syncLightboxControls();
+    preloadNeighborLightboxSlides();
 
-    dom.lbFilmstrip.querySelectorAll(".lb-thumb").forEach((t, idx) => {
-      const active = idx === state.lightboxIdx;
-      t.classList.toggle("is-active", active);
-      if (active) {
-        t.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-      }
+    const activeThumb = dom.lbFilmstrip.children[state.lightboxIdx];
+    dom.lbFilmstrip.querySelectorAll(".lb-thumb.is-active").forEach((el) => {
+      if (el !== activeThumb) el.classList.remove("is-active");
     });
+    if (activeThumb) {
+      activeThumb.classList.add("is-active");
+      const targetLeft =
+        activeThumb.offsetLeft -
+        (dom.lbFilmstrip.clientWidth - activeThumb.offsetWidth) * 0.5;
+      dom.lbFilmstrip.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+    }
   }
 
   function syncLightboxControls() {
@@ -884,11 +1290,13 @@
     if (!photo) return;
     const isFav = state.favorites.has(photo.id);
     dom.lbBtnFav.classList.toggle("is-active", isFav);
-    dom.lbBtnFav.textContent = isFav ? "♥ Favorited" : "♡ Favorite";
+    dom.lbBtnFav.innerHTML = isFav
+      ? '<span aria-hidden="true">♥</span><span class="lb-btn-label">Favorited</span>'
+      : '<span aria-hidden="true">♡</span><span class="lb-btn-label">Favorite</span>';
   }
 
   function renderLightboxFilmstrip() {
-    dom.lbFilmstrip.innerHTML = "";
+    dom.lbFilmstrip.replaceChildren();
     state.lightboxList.forEach((photo, idx) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -910,15 +1318,53 @@
   // 7. Event Listeners
   // =========================================================================
 
+  function bindHorizontalSwipe(el, onSwipeLeft, onSwipeRight) {
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+
+    el.addEventListener(
+      "touchstart",
+      (ev) => {
+        if (ev.touches.length !== 1) {
+          tracking = false;
+          return;
+        }
+        startX = ev.touches[0].clientX;
+        startY = ev.touches[0].clientY;
+        tracking = true;
+      },
+      { passive: true }
+    );
+
+    el.addEventListener(
+      "touchend",
+      (ev) => {
+        if (!tracking || ev.changedTouches.length !== 1) return;
+        tracking = false;
+        const dx = ev.changedTouches[0].clientX - startX;
+        const dy = ev.changedTouches[0].clientY - startY;
+        if (Math.abs(dx) > 42 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+          if (dx < 0) onSwipeLeft();
+          else onSwipeRight();
+        }
+      },
+      { passive: true }
+    );
+  }
+
   function bindEvents() {
     dom.btnExplore.addEventListener("click", () => {
-      dom.galleryNav.scrollIntoView({ behavior: "smooth", block: "start" });
+      const targetTop = dom.heroStage ? dom.heroStage.offsetHeight : 0;
+      window.scrollTo({ top: targetTop, behavior: "smooth" });
     });
 
     [dom.filterAll, dom.filterHighlights, dom.filterFavorites].forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (state.filter === btn.dataset.filter) return;
         state.filter = btn.dataset.filter;
         state.visibleCount = PAGE_BATCH_SIZE;
+        state.activeDate = null;
         syncUrlParams();
         renderGallery();
       });
@@ -952,10 +1398,17 @@
     });
 
     dom.btnBackTop.addEventListener("click", () => {
+      suppressScrollObserversUntil = performance.now() + 750;
+      if (state.chapters.length > 0) {
+        state.activeDate = state.chapters[0].date;
+        highlightActiveDateUI(state.activeDate, true);
+      }
       window.scrollTo({ top: 0, behavior: "smooth" });
+      scheduleHydrationAfterJump(500);
     });
 
     dom.heroStage.addEventListener("pointermove", (ev) => {
+      if (ev.pointerType && ev.pointerType !== "mouse") return;
       const x = ev.clientX;
       const y = ev.clientY;
       if (proximityRaf) cancelAnimationFrame(proximityRaf);
@@ -966,6 +1419,18 @@
       if (proximityRaf) cancelAnimationFrame(proximityRaf);
       resetHeroDotsProximity();
     });
+
+    bindHorizontalSwipe(
+      dom.heroShowcase,
+      () => {
+        setActiveHeroSlide(state.heroSlideIdx + 1);
+        restartHeroSlideshow();
+      },
+      () => {
+        setActiveHeroSlide(state.heroSlideIdx - 1);
+        restartHeroSlideshow();
+      }
+    );
 
     dom.lbBtnClose.addEventListener("click", closeLightbox);
     dom.lbPrev.addEventListener("click", () => stepLightbox(-1));
@@ -986,10 +1451,26 @@
     dom.lbImgWrap.addEventListener("mousemove", (ev) => {
       if (!state.lightboxZoomed) return;
       const rect = dom.lbImgWrap.getBoundingClientRect();
-      const xPct = Math.min(100, Math.max(0, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 100));
-      const yPct = Math.min(100, Math.max(0, ((ev.clientY - rect.top) / Math.max(1, rect.height)) * 100));
+      const xPct = Math.min(
+        100,
+        Math.max(0, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 100)
+      );
+      const yPct = Math.min(
+        100,
+        Math.max(0, ((ev.clientY - rect.top) / Math.max(1, rect.height)) * 100)
+      );
       dom.lbImg.style.transformOrigin = `${xPct.toFixed(1)}% ${yPct.toFixed(1)}%`;
     });
+
+    bindHorizontalSwipe(
+      dom.lbStage,
+      () => {
+        if (!state.lightboxZoomed) stepLightbox(1);
+      },
+      () => {
+        if (!state.lightboxZoomed) stepLightbox(-1);
+      }
+    );
 
     dom.lbBtnFav.addEventListener("click", () => {
       const photo = state.lightboxList[state.lightboxIdx];
@@ -1012,13 +1493,34 @@
       }
     });
 
-    const ro = new ResizeObserver(() => {
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = 0;
+          updateActiveChapterFromScroll();
+          schedulePumpHydration();
+        });
+      },
+      { passive: true }
+    );
+
+    const galleryRo = new ResizeObserver(() => {
+      if (!state.photos.length) return;
       const w = getContainerInnerWidth();
-      if (Math.abs(w - lastContainerWidth) > 6) {
+      if (Math.abs(w - lastContainerWidth) > 2) {
         renderGallery();
       }
     });
-    ro.observe(dom.galleryMain);
+    galleryRo.observe(dom.galleryMain);
+
+    if (dom.galleryNav) {
+      const navRo = new ResizeObserver(() => {
+        syncNavHeight();
+      });
+      navRo.observe(dom.galleryNav);
+    }
   }
 
   // =========================================================================
@@ -1085,11 +1587,13 @@
       state.manifest = manifest;
       state.photos = manifest.photos || [];
       state.chapters = manifest.chapters || [];
-      state.assetBaseUrl = (manifest.collection && manifest.collection.assetBaseUrl) || "./3k_exports";
+      state.assetBaseUrl =
+        (manifest.collection && manifest.collection.assetBaseUrl) || "./3k_exports";
 
       applyCollectionHeader(manifest.collection);
       renderHeroCover();
       renderGallery();
+      checkSentinelIfVisible();
     } catch (_) {
       dom.chaptersContainer.innerHTML = `
         <div class="empty-state">

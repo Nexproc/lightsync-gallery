@@ -25,7 +25,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from build_manifest import finalize_manifest_from_records, inspect_image_bytes
+from build_manifest import (
+    finalize_manifest_from_records,
+    inspect_image_bytes,
+    load_capture_timestamps_from_dir,
+    resolve_stem_capture_timestamp,
+)
 
 DEFAULT_DRIVE_FOLDER_ID = "1v-MDctwhXwaa49xQb6az4_V6hhto8FSQ"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".webp", ".png")
@@ -280,6 +285,17 @@ def parse_args() -> argparse.Namespace:
         default=Path(__file__).resolve().parent.parent / "manifest.json",
         help="Local manifest.json path to update",
     )
+    parser.add_argument(
+        "--exif-from-dir",
+        type=Path,
+        default=None,
+        help="Optional directory of original RAWs (.CR3/.DNG/.NEF/.ARW) or .xmp sidecars to supply capture timestamps when exported JPEGs lack EXIF",
+    )
+    parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Update timestamps/chapters in existing manifest.json using --exif-from-dir and upload manifest.json to GCS without re-uploading images",
+    )
     parser.add_argument("--access-token", default="", help="Optional OAuth2 access token")
     return parser.parse_args()
 
@@ -291,6 +307,58 @@ def main() -> None:
     bucket = args.bucket.replace("gs://", "").strip("/")
     prefix = args.prefix.strip("/")
     token = get_access_token(args.access_token)
+    capture_by_stem = load_capture_timestamps_from_dir(args.exif_from_dir)
+    if args.exif_from_dir:
+        print(f"      Loaded {len(capture_by_stem)} capture timestamps from {args.exif_from_dir}")
+
+    base_url = (
+        f"https://storage.googleapis.com/{bucket}/{prefix}"
+        if prefix
+        else f"https://storage.googleapis.com/{bucket}"
+    )
+    remote_manifest_url = f"https://storage.googleapis.com/{bucket}/manifest.json"
+
+    if args.manifest_only:
+        if not args.manifest_out.exists():
+            raise RuntimeError(f"Existing manifest not found: {args.manifest_out}")
+        existing_manifest = json.loads(args.manifest_out.read_text(encoding="utf-8"))
+        existing_coll = existing_manifest.get("collection") or {}
+        records_existing = existing_manifest.get("photos") or []
+        explicit_heroes = {p["id"] for p in records_existing if p.get("hero")}
+        updated_records: list[dict[str, Any]] = []
+        for p in records_existing:
+            rec = dict(p)
+            stem = Path(rec.get("filename") or rec["id"]).stem
+            ts = resolve_stem_capture_timestamp(stem, capture_by_stem)
+            if ts:
+                rec["timestamp"] = ts
+                rec["date"] = ts[:10]
+            updated_records.append(rec)
+
+        manifest = finalize_manifest_from_records(
+            updated_records,
+            base_url=existing_coll.get("assetBaseUrl") or base_url,
+            remote_manifest_url=existing_coll.get("remoteManifestUrl") or remote_manifest_url,
+            title=existing_coll.get("title") or "",
+            subtitle=existing_coll.get("subtitle") or "",
+            curator=existing_coll.get("curator") or "",
+            explicit_heroes=explicit_heroes,
+        )
+        manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
+        args.manifest_out.write_text(manifest_bytes.decode("utf-8"), encoding="utf-8")
+        upload_gcs_object(
+            bucket,
+            "manifest.json",
+            manifest_bytes,
+            "application/json; charset=UTF-8",
+            "no-cache, max-age=0",
+            token,
+        )
+        print(
+            f"Updated {args.manifest_out} and uploaded {remote_manifest_url} "
+            f"({len(manifest['photos'])} photos across {len(manifest['chapters'])} capture dates)."
+        )
+        return
 
     print(f"[1/5] Listing Google Drive folder {args.drive_folder_id} ...")
     drive_files = list_drive_images(args.drive_folder_id, token)
@@ -337,7 +405,8 @@ def main() -> None:
         if len(s_ts) >= 10 and s_ts[4:5] == ":" and s_ts[7:8] == ":":
             s_ts = s_ts.replace(":", "-", 2)
         fallback_iso = s_ts[:19]
-        record = inspect_image_bytes(img_bytes, filename, fallback_iso)
+        explicit_dt = resolve_stem_capture_timestamp(Path(filename).stem, capture_by_stem)
+        record = inspect_image_bytes(img_bytes, filename, fallback_iso, explicit_dt)
 
         obj_name = f"{prefix}/{filename}" if prefix else filename
         upload_gcs_object(
