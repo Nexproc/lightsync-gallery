@@ -1,58 +1,53 @@
 # lightsync-gallery
 
-Static single-page photography gallery designed for GitHub Pages (`https://nexproc.github.io/lightsync-gallery/`) backed by Google Cloud Storage (`3k_exports`).
+Static single-page photography gallery published via GitHub Pages (`https://www.nicktitcombe.com/lightsync-gallery/`) and backed by Google Cloud Storage (`3k_exports`).
 
 ## Features
 
 - **Aspect-Preserving Auto-Layout:** Combines asymmetric Hero spreads (1 full-height highlight paired alongside 2 stacked companions) with zero-crop justified rows.
-- **Proximity-Scaled Hero Carousel:** Opening cover crossfades featured photographs; carousel selectors smoothly double in size as the cursor approaches.
-- **Date Navigation & Timeline Scrubber:** Sticky date pills and a right-edge timeline rail jump directly across shoot dates.
+- **Proximity-Scaled Hero Carousel:** Full-bleed opening cover with carousel selectors that smoothly double in size as the cursor approaches.
+- **Automatic Date Navigation:** Sticky date pills and a right-edge timeline rail appear automatically whenever multiple capture/export dates exist.
 - **Progressive Blur-Up & Lazy Hydration:** Pre-allocates exact aspect boxes from `manifest.json` with inline 36px WebP placeholders and hydrates full-resolution masters via `IntersectionObserver`.
-- **Fullscreen Zoom Lightbox & Favorites:** 1:1 cursor-panning zoom, keyboard navigation (`←`, `→`, `Z`, `F`, `Esc`), direct downloads, and local `Favorites` selection export.
+- **Fullscreen Zoom Lightbox & Favorites:** Cursor-panning zoom, keyboard navigation (`←`, `→`, `Z`, `F`, `Esc`), direct downloads, and local `Favorites` selection export.
 
 ---
 
-## 1. Google Cloud Storage Setup
+## Sync Google Drive `3k_exports` → Google Cloud Storage
 
-1. **Create a US-Regional Bucket** (eligible for Always Free tier + monthly GCP credits):
+`scripts/sync_drive_to_gcs.py` wipes any previously uploaded images in your GCS bucket, streams all photographs directly from the Google Drive `3k_exports` folder (`1v-MDctwhXwaa49xQb6az4_V6hhto8FSQ`), applies `scripts/gcs-cors.json`, and uploads a fresh `manifest.json`.
+
+1. **Authorize Drive read + GCS access once:**
    ```bash
-   export BUCKET="lightsync-gallery-media" # pick a globally unique name
-   gcloud storage buckets create "gs://${BUCKET}" \
-     --location=us-west1 \
-     --uniform-bucket-level-access
+   pip install Pillow
+   gcloud auth application-default login \
+     --scopes="https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/devstorage.full_control"
    ```
 
-2. **Allow Public Read for Gallery Assets & Apply CORS**:
+2. **Sync Drive folder → GCS bucket & update `manifest.json`:**
    ```bash
-   gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
-     --member=allUsers \
-     --role=roles/storage.objectViewer
+   export BUCKET="your-gcs-bucket-name"
 
-   gcloud storage buckets update "gs://${BUCKET}" \
-     --cors-file=scripts/gcs-cors.json
+   python3 scripts/sync_drive_to_gcs.py --bucket "$BUCKET"
    ```
 
-3. **Build `manifest.json` & Sync `3k_exports` to GCS**:
+3. **Commit `manifest.json` once** (so the repository points to `https://storage.googleapis.com/$BUCKET/manifest.json`):
    ```bash
-   python3 scripts/build_manifest.py \
-     --images-dir /path/to/3k_exports \
-     --base-url "https://storage.googleapis.com/${BUCKET}/3k_exports" \
-     --remote-manifest-url "https://storage.googleapis.com/${BUCKET}/manifest.json" \
-     --out manifest.json
-
-   gcloud storage rsync /path/to/3k_exports "gs://${BUCKET}/3k_exports" \
-     --cache-control="public, max-age=31536000, immutable"
-
-   gcloud storage cp manifest.json "gs://${BUCKET}/manifest.json" \
-     --cache-control="no-cache, max-age=0"
+   git add manifest.json
+   git commit -m "Configure GCS bucket URL in manifest.json"
+   git push
    ```
-
-   Because `remoteManifestUrl` points to `gs://${BUCKET}/manifest.json`, future shoots synced to GCS appear live on GitHub Pages without needing a `git commit` or rebuild.
+   After `remoteManifestUrl` is committed once, future syncs via `scripts/sync_drive_to_gcs.py --bucket "$BUCKET"` update the live gallery immediately without needing a new git commit.
 
 ---
 
-## 2. Enable GitHub Pages
+## Local Folder Build (Optional)
 
-1. Open **Settings → Pages** in this repository.
-2. Under **Build and deployment → Source**, select **GitHub Actions** (uses [`.github/workflows/pages.yml`](.github/workflows/pages.yml)).
-3. The gallery publishes to `https://nexproc.github.io/lightsync-gallery/`.
+If exporting directly from a local folder instead of Google Drive:
+
+```bash
+python3 scripts/build_manifest.py \
+  --images-dir /path/to/3k_exports \
+  --base-url "https://storage.googleapis.com/$BUCKET/3k_exports" \
+  --remote-manifest-url "https://storage.googleapis.com/$BUCKET/manifest.json" \
+  --out manifest.json
+```

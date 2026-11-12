@@ -55,6 +55,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
   background-color: var(--surface-page);
@@ -94,12 +98,16 @@ button {
 .hero-stage {
   position: relative;
   width: 100%;
-  min-height: clamp(500px, 78vh, 840px);
+  min-height: clamp(440px, 76vh, 840px);
   display: grid;
-  grid-template-columns: 1.02fr 1.38fr;
+  grid-template-columns: 1fr;
   border-bottom: 1px solid var(--border-hairline);
   background-color: var(--surface-elevated);
   overflow: hidden;
+}
+
+.hero-stage.has-copy {
+  grid-template-columns: 1.02fr 1.38fr;
 }
 
 .hero-copy {
@@ -137,49 +145,11 @@ button {
   line-height: 1.6;
   color: var(--ink-secondary);
   max-width: 38ch;
-  margin: 0 0 26px;
-}
-
-.hero-meta-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  font-size: 0.76rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-  margin-bottom: 32px;
-}
-
-.hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
+  margin: 0;
 }
 
 .hero-spacer {
   height: 12px;
-}
-
-.btn-primary {
-  appearance: none;
-  border: 1px solid var(--ink-primary);
-  background: var(--ink-primary);
-  color: var(--surface-page);
-  padding: 11px 22px;
-  font-size: 0.76rem;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: transform 180ms ease, opacity 180ms ease;
-}
-
-.btn-primary:hover {
-  opacity: 0.88;
-  transform: translateY(-1px);
 }
 
 .btn-ghost {
@@ -205,7 +175,7 @@ button {
   position: relative;
   background: hsl(24, 10%, 8%);
   overflow: hidden;
-  min-height: 400px;
+  min-height: clamp(440px, 76vh, 840px);
 }
 
 .hero-slides-layer {
@@ -218,7 +188,7 @@ button {
   position: absolute;
   inset: auto 0 0 0;
   height: 130px;
-  background: linear-gradient(to top, rgba(10, 9, 8, 0.72), transparent);
+  background: linear-gradient(to top, rgba(10, 9, 8, 0.68), transparent);
   pointer-events: none;
   z-index: 2;
 }
@@ -249,9 +219,9 @@ button {
 
 .hero-controls-bar {
   position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: 18px;
+  left: clamp(16px, 3vw, 40px);
+  right: clamp(16px, 3vw, 40px);
+  bottom: 20px;
   z-index: 4;
   display: flex;
   align-items: center;
@@ -260,16 +230,31 @@ button {
   pointer-events: none;
 }
 
-.hero-caption-text {
-  color: hsla(38, 25%, 96%, 0.9);
-  font-size: 0.75rem;
-  letter-spacing: 0.1em;
+.hero-enter-btn {
+  appearance: none;
+  border: 1px solid hsla(38, 25%, 96%, 0.28);
+  background: rgba(14, 12, 10, 0.52);
+  color: hsla(38, 25%, 96%, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 9px 18px;
+  font-size: 0.73rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.hero-enter-btn:hover {
+  background: rgba(14, 12, 10, 0.78);
+  border-color: hsla(38, 25%, 96%, 0.58);
+  transform: translateY(-1px);
 }
 
 /* Proximity-responsive carousel selectors:
-   --prox smoothly ranges from 0 (cursor >= 160px away) to 1 (cursor over selector),
+   --prox smoothly ranges from 0 (cursor >= 165px away) to 1 (cursor over selector),
    doubling both width and height while giving each selector a generous click hit-area. */
 .hero-dots {
   display: flex;
@@ -278,6 +263,7 @@ button {
   pointer-events: auto;
   padding: 8px 6px;
   margin: -8px -6px;
+  margin-left: auto;
 }
 
 .hero-dot {
@@ -387,6 +373,7 @@ button {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .segmented-group {
@@ -447,7 +434,7 @@ button {
 }
 
 /* ==========================================================================
-   3. Gallery Chapters & Aspect-Preserving Auto-Layout
+   3. Gallery Grid & Aspect-Preserving Auto-Layout
    ========================================================================== */
 
 .gallery-main {
@@ -457,8 +444,8 @@ button {
 }
 
 .date-chapter {
-  padding-top: 36px;
-  margin-bottom: 48px;
+  padding-top: 24px;
+  margin-bottom: 40px;
   scroll-margin-top: calc(var(--nav-height) + 12px);
 }
 
@@ -466,41 +453,25 @@ button {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding-bottom: 16px;
-  margin-bottom: 20px;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
   border-bottom: 1px solid var(--border-hairline);
 }
 
-.chapter-title-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
 .chapter-date-tag {
-  font-size: 0.73rem;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--accent-warm);
+  color: var(--ink-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-.chapter-title {
-  font-family: var(--font-serif);
-  font-weight: 400;
-  font-size: clamp(1.55rem, 2.5vw, 2.15rem);
-  letter-spacing: -0.01em;
-  margin: 0;
-}
-
-.chapter-subtitle {
-  font-size: 0.85rem;
+.chapter-count-tag {
+  font-size: 0.73rem;
   color: var(--ink-muted);
-  margin: 4px 0 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .chapter-rows {
@@ -581,18 +552,11 @@ button {
   inset: 0;
   z-index: 4;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-end;
+  align-items: flex-start;
   padding: 10px;
-  background: linear-gradient(
-    to bottom,
-    rgba(10, 9, 8, 0.28) 0%,
-    transparent 26%,
-    transparent 72%,
-    rgba(10, 9, 8, 0.56) 100%
-  );
   opacity: 0;
-  transition: opacity 200ms ease;
+  transition: opacity 180ms ease;
   pointer-events: none;
 }
 
@@ -603,9 +567,7 @@ button {
 
 .card-top-actions {
   display: flex;
-  justify-content: flex-end;
   gap: 6px;
-  margin-left: auto;
   pointer-events: auto;
 }
 
@@ -636,23 +598,6 @@ button {
   color: hsl(8, 84%, 66%);
 }
 
-.card-bottom-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  color: rgba(250, 248, 245, 0.94);
-  font-size: 0.76rem;
-}
-
-.card-title {
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Silent Pagination Sentinel */
 .pagination-sentinel {
   display: flex;
   justify-content: center;
@@ -784,6 +729,7 @@ button {
 }
 
 .lb-title {
+  color: rgba(255, 255, 255, 0.78);
   font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
@@ -895,7 +841,7 @@ button {
 .lightbox-filmstrip {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   padding: 8px 20px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -942,13 +888,17 @@ button {
   max-width: var(--max-width);
   margin: 0 auto;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
   font-size: 0.74rem;
   letter-spacing: 0.06em;
   color: var(--ink-muted);
+}
+
+.gallery-footer.has-credit {
+  justify-content: space-between;
 }
 
 .back-top-btn {
@@ -989,19 +939,20 @@ button {
 }
 
 @media (max-width: 920px) {
-  .hero-stage {
+  .hero-stage,
+  .hero-stage.has-copy {
     grid-template-columns: 1fr;
     min-height: auto;
   }
 
   .hero-showcase {
     order: -1;
-    height: 52vh;
+    height: 58vh;
     min-height: 320px;
   }
 
   .timeline-scrubber {
-    display: none;
+    display: none !important;
   }
 
   .lightbox-stage {

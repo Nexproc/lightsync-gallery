@@ -3,7 +3,7 @@
  * - Aspect-preserving editorial spreads & justified row solver
  * - Cursor-proximity 2x magnification on hero carousel selectors
  * - Progressive blur-up placeholders + IntersectionObserver lazy hydration
- * - Automatic chunked pagination, date chapter navigation & timeline scrubber
+ * - Automatic chunked pagination & optional date navigation
  */
 
 (() => {
@@ -14,7 +14,8 @@
     favorites: "lightsync_gallery_favorites",
   };
 
-  const PAGE_BATCH_SIZE = 24;
+  const PAGE_BATCH_SIZE = 30;
+  const MAX_CAROUSEL_SLIDES = 7;
   const HERO_PROXIMITY_RADIUS_PX = 165;
 
   const state = {
@@ -43,17 +44,14 @@
   const dom = {
     html: document.documentElement,
     heroStage: document.getElementById("hero-stage"),
+    heroCopy: document.getElementById("hero-copy"),
     collectionEyebrow: document.getElementById("collection-eyebrow"),
     collectionTitle: document.getElementById("collection-title"),
     collectionSubtitle: document.getElementById("collection-subtitle"),
-    metaDateRange: document.getElementById("meta-date-range"),
-    metaPhotoCount: document.getElementById("meta-photo-count"),
     heroShowcase: document.getElementById("hero-showcase"),
     heroSlidesLayer: document.getElementById("hero-slides-layer"),
-    heroCaptionText: document.getElementById("hero-caption-text"),
     heroDots: document.getElementById("hero-dots"),
     btnExplore: document.getElementById("btn-explore-collection"),
-    btnHeroQuickview: document.getElementById("btn-hero-quickview"),
 
     galleryNav: document.getElementById("gallery-nav"),
     dateChaptersNav: document.getElementById("date-chapters-nav"),
@@ -69,6 +67,7 @@
     paginationSentinel: document.getElementById("pagination-sentinel"),
     btnLoadMore: document.getElementById("btn-load-more"),
 
+    footer: document.querySelector(".gallery-footer"),
     footerCopyright: document.getElementById("footer-copyright"),
     btnBackTop: document.getElementById("btn-back-top"),
 
@@ -163,8 +162,7 @@
   function updateToolbarCounts() {
     const favCount = state.favorites.size;
 
-    dom.metaPhotoCount.textContent = `${state.photos.length} Photographs`;
-    dom.filterAll.textContent = "All";
+    dom.filterAll.textContent = state.photos.length > 0 ? `All (${state.photos.length})` : "All";
     dom.filterHighlights.textContent = "Highlights";
     dom.filterFavorites.textContent = favCount > 0 ? `Favorites (${favCount})` : "Favorites";
 
@@ -179,16 +177,28 @@
   // 1. Hero Carousel & 2x Cursor-Proximity Selector Magnification
   // =========================================================================
 
-  function renderHeroCover() {
-    let heroes = state.photos.filter((p) => p.hero);
-    if (heroes.length === 0) {
-      heroes = state.photos.slice(0, 5);
+  function pickCarouselSlides() {
+    const landscapes = state.photos.filter((p) => p.hero && p.orientation === "landscape");
+    const pool =
+      landscapes.length > 0
+        ? landscapes
+        : state.photos.filter((p) => p.orientation === "landscape");
+    const source = pool.length > 0 ? pool : state.photos;
+
+    if (source.length <= MAX_CAROUSEL_SLIDES) {
+      return source;
     }
 
-    state.heroPhotos = [
-      ...heroes.filter((p) => p.orientation === "landscape"),
-      ...heroes.filter((p) => p.orientation !== "landscape"),
-    ];
+    const sampled = [];
+    for (let i = 0; i < MAX_CAROUSEL_SLIDES; i++) {
+      const idx = Math.floor((i * (source.length - 1)) / (MAX_CAROUSEL_SLIDES - 1));
+      sampled.push(source[idx]);
+    }
+    return sampled;
+  }
+
+  function renderHeroCover() {
+    state.heroPhotos = pickCarouselSlides();
 
     if (state.heroSlideIdx >= state.heroPhotos.length) {
       state.heroSlideIdx = 0;
@@ -204,7 +214,7 @@
 
       const img = document.createElement("img");
       img.src = resolvePhotoUrl(photo);
-      img.alt = photo.title;
+      img.alt = photo.filename;
       img.decoding = "async";
       img.addEventListener("load", () => state.hydratedIds.add(photo.id));
       img.addEventListener("click", () => openLightboxByPhotoId(photo.id));
@@ -217,7 +227,7 @@
       dot.className = `hero-dot${idx === state.heroSlideIdx ? " is-active" : ""}`;
       dot.setAttribute("role", "tab");
       dot.setAttribute("aria-selected", idx === state.heroSlideIdx ? "true" : "false");
-      dot.setAttribute("aria-label", `Show featured photograph ${idx + 1}: ${photo.title}`);
+      dot.setAttribute("aria-label", `Slide ${idx + 1}`);
 
       const bar = document.createElement("span");
       bar.className = "hero-dot-bar";
@@ -232,22 +242,7 @@
       dom.heroDots.appendChild(dot);
     });
 
-    updateHeroCaption();
     restartHeroSlideshow();
-  }
-
-  function formatReadableDate(isoDate) {
-    const ch = state.chapters.find((c) => c.date === isoDate);
-    return ch ? ch.fullDate : isoDate;
-  }
-
-  function updateHeroCaption() {
-    const photo = state.heroPhotos[state.heroSlideIdx];
-    if (!photo) {
-      dom.heroCaptionText.textContent = "";
-      return;
-    }
-    dom.heroCaptionText.textContent = `${photo.title} · ${formatReadableDate(photo.date)}`;
   }
 
   function setActiveHeroSlide(nextIdx) {
@@ -264,8 +259,6 @@
       dot.classList.toggle("is-active", active);
       dot.setAttribute("aria-selected", active ? "true" : "false");
     });
-
-    updateHeroCaption();
   }
 
   function restartHeroSlideshow() {
@@ -300,7 +293,6 @@
       const cy = r.top + r.height * 0.5;
       const dist = Math.hypot(clientX - cx, clientY - cy);
       const t = Math.max(0, Math.min(1, 1 - dist / HERO_PROXIMITY_RADIUS_PX));
-      // Smoothstep curve: doubles selector size smoothly as cursor approaches
       const smooth = t * t * (3 - 2 * t);
       dot.style.setProperty("--prox", smooth.toFixed(3));
     });
@@ -313,7 +305,7 @@
   }
 
   // =========================================================================
-  // 2. Date Chapter Navigation & Timeline Scrubber
+  // 2. Date Navigation & Timeline Scrubber (Shown Only When 2+ Dates Exist)
   // =========================================================================
 
   function renderDateNavigation(filteredPhotos) {
@@ -326,6 +318,14 @@
     }
 
     const activeChapters = state.chapters.filter((ch) => countsByDate.has(ch.date));
+    if (activeChapters.length <= 1) {
+      dom.dateChaptersNav.hidden = true;
+      dom.timelineScrubber.hidden = true;
+      return;
+    }
+
+    dom.dateChaptersNav.hidden = false;
+    dom.timelineScrubber.hidden = false;
 
     activeChapters.forEach((ch, idx) => {
       const isCurrent = state.activeDate ? state.activeDate === ch.date : idx === 0;
@@ -343,7 +343,7 @@
       tick.className = `scrubber-tick${isCurrent ? " is-active" : ""}`;
       tick.dataset.date = ch.date;
       tick.innerHTML = `
-        <span class="scrubber-label">${ch.label} · ${ch.title}</span>
+        <span class="scrubber-label">${ch.label}</span>
         <span class="scrubber-line"></span>
       `;
       tick.addEventListener("click", () => jumpToDateChapter(ch.date));
@@ -550,7 +550,7 @@
 
     const hiImg = document.createElement("img");
     hiImg.className = "photo-hi";
-    hiImg.alt = photo.title;
+    hiImg.alt = photo.filename;
     hiImg.decoding = "async";
     hiImg.dataset.photoId = photo.id;
 
@@ -589,15 +589,7 @@
     btnDl.addEventListener("click", (ev) => ev.stopPropagation());
 
     topActions.append(btnFav, btnDl);
-
-    const bottomMeta = document.createElement("div");
-    bottomMeta.className = "card-bottom-meta";
-    const titleSpan = document.createElement("span");
-    titleSpan.className = "card-title";
-    titleSpan.textContent = photo.title;
-    bottomMeta.appendChild(titleSpan);
-
-    overlay.append(topActions, bottomMeta);
+    overlay.appendChild(topActions);
     figure.appendChild(overlay);
 
     figure.addEventListener("click", () => openLightboxByPhotoId(photo.id));
@@ -636,7 +628,7 @@
           }
         }
       },
-      { rootMargin: "320px 0px" }
+      { rootMargin: "360px 0px" }
     );
 
     if (sentinelObserver) sentinelObserver.disconnect();
@@ -652,7 +644,7 @@
           }
         }
       },
-      { rootMargin: "280px 0px" }
+      { rootMargin: "360px 0px" }
     );
     sentinelObserver.observe(dom.paginationSentinel);
   }
@@ -681,8 +673,49 @@
   }
 
   // =========================================================================
-  // 5. Render Gallery Chapters
+  // 5. Render Gallery Grid (Date Dividers Only When Multiple Dates Exist)
   // =========================================================================
+
+  function buildBlocksDOM(blocks) {
+    const rowsWrap = document.createElement("div");
+    rowsWrap.className = "chapter-rows";
+
+    for (const block of blocks) {
+      if (block.type === "spread") {
+        const spreadEl = document.createElement("div");
+        spreadEl.className = "editorial-spread";
+
+        const heroCard = createPhotoCard(
+          block.heroItem.photo,
+          block.heroItem.width,
+          block.heroItem.height
+        );
+
+        const stackEl = document.createElement("div");
+        stackEl.className = "spread-stack";
+        stackEl.style.width = `${block.stackWidth.toFixed(2)}px`;
+        for (const sItem of block.stackItems) {
+          stackEl.appendChild(createPhotoCard(sItem.photo, sItem.width, sItem.height));
+        }
+
+        if (block.heroOnRight) {
+          spreadEl.append(stackEl, heroCard);
+        } else {
+          spreadEl.append(heroCard, stackEl);
+        }
+        rowsWrap.appendChild(spreadEl);
+      } else {
+        const rowEl = document.createElement("div");
+        rowEl.className = "gallery-row";
+        for (const rItem of block.items) {
+          rowEl.appendChild(createPhotoCard(rItem.photo, rItem.width, rItem.height));
+        }
+        rowsWrap.appendChild(rowEl);
+      }
+    }
+
+    return rowsWrap;
+  }
 
   function renderGallery() {
     const filtered = getFilteredPhotos();
@@ -708,72 +741,45 @@
     lastContainerWidth = containerWidth;
     const gutter = 12;
 
-    for (const ch of state.chapters) {
-      const chPhotos = visibleSlice.filter((p) => p.date === ch.date);
-      if (chPhotos.length === 0) continue;
+    const totalDistinctDates = new Set(filtered.map((p) => p.date)).size;
 
-      const section = document.createElement("section");
-      section.className = "date-chapter";
-      section.id = `chapter-${ch.date}`;
-      section.dataset.date = ch.date;
+    if (totalDistinctDates <= 1) {
+      const blocks = solveAutoLayout(visibleSlice, containerWidth, gutter);
+      dom.chaptersContainer.appendChild(buildBlocksDOM(blocks));
+    } else {
+      for (const ch of state.chapters) {
+        const chPhotos = visibleSlice.filter((p) => p.date === ch.date);
+        if (chPhotos.length === 0) continue;
 
-      const header = document.createElement("div");
-      header.className = "chapter-header";
-      header.innerHTML = `
-        <div>
-          <div class="chapter-title-wrap">
-            <span class="chapter-date-tag">${ch.fullDate}</span>
-            <h2 class="chapter-title">${ch.title}</h2>
-          </div>
-          ${ch.subtitle ? `<p class="chapter-subtitle">${ch.subtitle}</p>` : ""}
-        </div>
-      `;
-      section.appendChild(header);
+        const totalInDate = filtered.filter((p) => p.date === ch.date).length;
 
-      const blocks = solveAutoLayout(chPhotos, containerWidth, gutter);
-      const rowsWrap = document.createElement("div");
-      rowsWrap.className = "chapter-rows";
+        const section = document.createElement("section");
+        section.className = "date-chapter";
+        section.id = `chapter-${ch.date}`;
+        section.dataset.date = ch.date;
 
-      for (const block of blocks) {
-        if (block.type === "spread") {
-          const spreadEl = document.createElement("div");
-          spreadEl.className = "editorial-spread";
+        const header = document.createElement("div");
+        header.className = "chapter-header";
 
-          const heroCard = createPhotoCard(
-            block.heroItem.photo,
-            block.heroItem.width,
-            block.heroItem.height
-          );
+        const dateSpan = document.createElement("span");
+        dateSpan.className = "chapter-date-tag";
+        dateSpan.textContent = ch.fullDate || ch.date;
 
-          const stackEl = document.createElement("div");
-          stackEl.className = "spread-stack";
-          stackEl.style.width = `${block.stackWidth.toFixed(2)}px`;
-          for (const sItem of block.stackItems) {
-            stackEl.appendChild(createPhotoCard(sItem.photo, sItem.width, sItem.height));
-          }
+        const countSpan = document.createElement("span");
+        countSpan.className = "chapter-count-tag";
+        countSpan.textContent = `${totalInDate}`;
 
-          if (block.heroOnRight) {
-            spreadEl.append(stackEl, heroCard);
-          } else {
-            spreadEl.append(heroCard, stackEl);
-          }
-          rowsWrap.appendChild(spreadEl);
-        } else {
-          const rowEl = document.createElement("div");
-          rowEl.className = "gallery-row";
-          for (const rItem of block.items) {
-            rowEl.appendChild(createPhotoCard(rItem.photo, rItem.width, rItem.height));
-          }
-          rowsWrap.appendChild(rowEl);
-        }
+        header.append(dateSpan, countSpan);
+        section.appendChild(header);
+
+        const blocks = solveAutoLayout(chPhotos, containerWidth, gutter);
+        section.appendChild(buildBlocksDOM(blocks));
+        dom.chaptersContainer.appendChild(section);
       }
-
-      section.appendChild(rowsWrap);
-      dom.chaptersContainer.appendChild(section);
+      setupChapterScrollSpy();
     }
 
     dom.btnLoadMore.hidden = visibleSlice.length >= filtered.length;
-    setupChapterScrollSpy();
   }
 
   // =========================================================================
@@ -853,11 +859,11 @@
 
     const url = resolvePhotoUrl(photo);
     dom.lbImg.src = url;
-    dom.lbImg.alt = photo.title;
+    dom.lbImg.alt = photo.filename;
     state.hydratedIds.add(photo.id);
 
     dom.lbCounter.textContent = `${state.lightboxIdx + 1} / ${state.lightboxList.length}`;
-    dom.lbTitle.textContent = `${photo.title} · ${formatReadableDate(photo.date)}`;
+    dom.lbTitle.textContent = photo.filename;
 
     dom.lbBtnDownload.href = url;
     dom.lbBtnDownload.download = photo.filename;
@@ -889,7 +895,7 @@
       btn.className = `lb-thumb${idx === state.lightboxIdx ? " is-active" : ""}`;
       const img = document.createElement("img");
       img.src = photo.lqip;
-      img.alt = photo.title;
+      img.alt = photo.filename;
       btn.appendChild(img);
       btn.addEventListener("click", () => {
         setLightboxZoom(false);
@@ -906,14 +912,6 @@
 
   function bindEvents() {
     dom.btnExplore.addEventListener("click", () => {
-      dom.galleryNav.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-
-    dom.btnHeroQuickview.addEventListener("click", () => {
-      state.filter = "highlights";
-      state.visibleCount = PAGE_BATCH_SIZE;
-      syncUrlParams();
-      renderGallery();
       dom.galleryNav.scrollIntoView({ behavior: "smooth", block: "start" });
     });
 
@@ -935,11 +933,11 @@
     dom.btnCopyFavorites.addEventListener("click", async () => {
       const picks = state.photos
         .filter((p) => state.favorites.has(p.id))
-        .map((p) => `${p.title} (${p.filename})`);
-      const summary = `Favorite Photographs (${picks.length}):\n` + picks.join("\n");
+        .map((p) => p.filename);
+      const summary = picks.join("\n");
       try {
         await navigator.clipboard.writeText(summary);
-        showToast(`Copied ${picks.length} favorites to clipboard`);
+        showToast(`Copied ${picks.length} filenames to clipboard`);
       } catch (_) {
         showToast(`${picks.length} favorites saved`);
       }
@@ -957,7 +955,6 @@
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
 
-    // Cursor-proximity magnification on Hero carousel selectors
     dom.heroStage.addEventListener("pointermove", (ev) => {
       const x = ev.clientX;
       const y = ev.clientY;
@@ -970,7 +967,6 @@
       resetHeroDotsProximity();
     });
 
-    // Lightbox controls
     dom.lbBtnClose.addEventListener("click", closeLightbox);
     dom.lbPrev.addEventListener("click", () => stepLightbox(-1));
     dom.lbNext.addEventListener("click", () => stepLightbox(1));
@@ -1029,6 +1025,35 @@
   // Bootstrap
   // =========================================================================
 
+  function applyCollectionHeader(collection) {
+    if (!collection) return;
+    const hasTitle = Boolean(collection.title);
+    const hasSub = Boolean(collection.subtitle);
+    const hasCurator = Boolean(collection.curator);
+
+    if (hasTitle) {
+      document.title = collection.title;
+      dom.collectionTitle.textContent = collection.title;
+      dom.collectionTitle.hidden = false;
+    }
+    if (hasSub) {
+      dom.collectionSubtitle.textContent = collection.subtitle;
+      dom.collectionSubtitle.hidden = false;
+    }
+    if (hasCurator) {
+      dom.collectionEyebrow.textContent = collection.curator;
+      dom.collectionEyebrow.hidden = false;
+      dom.footerCopyright.textContent = `© ${collection.curator}`;
+      dom.footerCopyright.hidden = false;
+      dom.footer.classList.add("has-credit");
+    }
+
+    if (hasTitle || hasSub || hasCurator) {
+      dom.heroCopy.hidden = false;
+      dom.heroStage.classList.add("has-copy");
+    }
+  }
+
   async function loadManifest() {
     if (window.__EMBEDDED_MANIFEST__) {
       return window.__EMBEDDED_MANIFEST__;
@@ -1062,17 +1087,7 @@
       state.chapters = manifest.chapters || [];
       state.assetBaseUrl = (manifest.collection && manifest.collection.assetBaseUrl) || "./3k_exports";
 
-      if (manifest.collection) {
-        const c = manifest.collection;
-        if (c.curator) {
-          dom.collectionEyebrow.textContent = c.curator;
-          dom.footerCopyright.textContent = `© ${c.curator}`;
-        }
-        if (c.title) dom.collectionTitle.textContent = c.title;
-        if (c.subtitle) dom.collectionSubtitle.textContent = c.subtitle;
-        if (c.dateRange) dom.metaDateRange.textContent = c.dateRange;
-      }
-
+      applyCollectionHeader(manifest.collection);
       renderHeroCover();
       renderGallery();
     } catch (_) {
