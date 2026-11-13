@@ -99,6 +99,8 @@
   let lastContainerWidth = 0;
   let lastDateNavKey = "";
   let suppressScrollObserversUntil = 0;
+  let lastHeroDotsTouchTime = 0;
+  let lastHeroSwipeTime = 0;
 
   // =========================================================================
   // Preferences & URL State
@@ -284,6 +286,7 @@
         lqipImg.className = "hero-lqip";
         lqipImg.src = photo.lqip;
         lqipImg.alt = "";
+        lqipImg.draggable = false;
         lqipImg.setAttribute("aria-hidden", "true");
         slide.appendChild(lqipImg);
       }
@@ -292,9 +295,13 @@
       img.className = "hero-hi";
       img.alt = photo.filename;
       img.decoding = "async";
+      img.draggable = false;
       slide.appendChild(img);
 
-      slide.addEventListener("click", () => openLightboxByPhotoId(photo.id));
+      slide.addEventListener("click", () => {
+        if (performance.now() - lastHeroSwipeTime < 450) return;
+        openLightboxByPhotoId(photo.id);
+      });
       dom.heroSlidesLayer.appendChild(slide);
 
       const dot = document.createElement("button");
@@ -310,6 +317,7 @@
 
       dot.addEventListener("click", (ev) => {
         ev.stopPropagation();
+        if (performance.now() - lastHeroDotsTouchTime < 600) return;
         setActiveHeroSlide(idx);
         restartHeroSlideshow();
       });
@@ -376,6 +384,31 @@
     });
   }
 
+  function selectHeroDotAtTouchX(clientX) {
+    const dots = Array.from(dom.heroDots.querySelectorAll(".hero-dot"));
+    if (!dots.length) return;
+
+    let closestIdx = 0;
+    let minDist = Infinity;
+    dots.forEach((dot, idx) => {
+      const r = dot.getBoundingClientRect();
+      const cx = r.left + r.width * 0.5;
+      const dist = Math.abs(clientX - cx);
+      if (dist < minDist) {
+        minDist = dist;
+        closestIdx = idx;
+      }
+      const t = Math.max(0, Math.min(1, 1 - dist / 64));
+      const smooth = t * t * (3 - 2 * t);
+      dot.style.setProperty("--prox", smooth.toFixed(3));
+    });
+
+    if (closestIdx !== state.heroSlideIdx) {
+      setActiveHeroSlide(closestIdx);
+    }
+    restartHeroSlideshow();
+  }
+
   function resetHeroDotsProximity() {
     dom.heroDots.querySelectorAll(".hero-dot").forEach((dot) => {
       dot.style.setProperty("--prox", "0");
@@ -385,6 +418,19 @@
   // =========================================================================
   // 2. Date Navigation & Timeline Scrubber (Shown Only When 2+ Dates Exist)
   // =========================================================================
+
+  function syncScrubberVisibility() {
+    if (!dom.timelineScrubber || dom.timelineScrubber.hidden) {
+      if (dom.timelineScrubber) dom.timelineScrubber.classList.remove("is-visible");
+      return;
+    }
+    if (!dom.heroStage) {
+      dom.timelineScrubber.classList.add("is-visible");
+      return;
+    }
+    const heroRect = dom.heroStage.getBoundingClientRect();
+    dom.timelineScrubber.classList.toggle("is-visible", heroRect.bottom <= 4);
+  }
 
   function renderDateNavigation(filteredPhotos) {
     const countsByDate = new Map();
@@ -399,6 +445,7 @@
       dom.timelineScrubber.replaceChildren();
       dom.dateChaptersNav.hidden = true;
       dom.timelineScrubber.hidden = true;
+      dom.timelineScrubber.classList.remove("is-visible");
       return;
     }
 
@@ -409,6 +456,7 @@
     const navKey = activeChapters.map((ch) => `${ch.date}:${ch.label}`).join("|");
     dom.dateChaptersNav.hidden = false;
     dom.timelineScrubber.hidden = false;
+    syncScrubberVisibility();
 
     if (navKey === lastDateNavKey) {
       highlightActiveDateUI(state.activeDate, false);
@@ -1313,7 +1361,10 @@
     el.addEventListener(
       "touchstart",
       (ev) => {
-        if (ev.touches.length !== 1) {
+        if (
+          ev.touches.length !== 1 ||
+          (ev.target && ev.target.closest && ev.target.closest(".hero-controls-bar"))
+        ) {
           tracking = false;
           return;
         }
@@ -1394,13 +1445,44 @@
       resetHeroDotsProximity();
     });
 
+    let activeDotsPointerId = null;
+
+    dom.heroDots.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType === "mouse") return;
+      ev.stopPropagation();
+      if (ev.cancelable) ev.preventDefault();
+      activeDotsPointerId = ev.pointerId;
+      lastHeroDotsTouchTime = performance.now();
+      try {
+        dom.heroDots.setPointerCapture(ev.pointerId);
+      } catch (_) {}
+      selectHeroDotAtTouchX(ev.clientX);
+    });
+
+    dom.heroDots.addEventListener("pointermove", (ev) => {
+      if (ev.pointerId !== activeDotsPointerId || ev.pointerType === "mouse") return;
+      lastHeroDotsTouchTime = performance.now();
+      selectHeroDotAtTouchX(ev.clientX);
+    });
+
+    const endDotsTouch = (ev) => {
+      if (ev.pointerId !== activeDotsPointerId) return;
+      activeDotsPointerId = null;
+      lastHeroDotsTouchTime = performance.now();
+      resetHeroDotsProximity();
+    };
+    dom.heroDots.addEventListener("pointerup", endDotsTouch);
+    dom.heroDots.addEventListener("pointercancel", endDotsTouch);
+
     bindHorizontalSwipe(
       dom.heroShowcase,
       () => {
+        lastHeroSwipeTime = performance.now();
         setActiveHeroSlide(state.heroSlideIdx + 1);
         restartHeroSlideshow();
       },
       () => {
+        lastHeroSwipeTime = performance.now();
         setActiveHeroSlide(state.heroSlideIdx - 1);
         restartHeroSlideshow();
       }
@@ -1473,6 +1555,7 @@
         if (scrollRaf) return;
         scrollRaf = requestAnimationFrame(() => {
           scrollRaf = 0;
+          syncScrubberVisibility();
           updateActiveChapterFromScroll();
           schedulePumpHydration();
         });
@@ -1481,6 +1564,7 @@
     );
 
     const galleryRo = new ResizeObserver(() => {
+      syncScrubberVisibility();
       if (!state.photos.length) return;
       const w = getContainerInnerWidth();
       if (Math.abs(w - lastContainerWidth) > 2) {
@@ -1488,6 +1572,7 @@
       }
     });
     galleryRo.observe(dom.galleryMain);
+    if (dom.heroStage) galleryRo.observe(dom.heroStage);
 
     if (dom.galleryNav) {
       const navRo = new ResizeObserver(() => {

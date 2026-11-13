@@ -177,6 +177,10 @@ button {
   overflow: hidden;
   min-height: clamp(440px, 76vh, 840px);
   touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .hero-slides-layer {
@@ -203,6 +207,8 @@ button {
   pointer-events: none;
   cursor: zoom-in;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .hero-slide.is-active {
@@ -222,6 +228,7 @@ button {
   transform: scale(1.08);
   transition: opacity 560ms ease;
   pointer-events: none;
+  -webkit-user-drag: none;
 }
 
 .hero-slide .hero-hi {
@@ -234,6 +241,9 @@ button {
   display: block;
   opacity: 0;
   transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .hero-slide.is-loaded .hero-hi {
@@ -255,6 +265,8 @@ button {
   justify-content: space-between;
   gap: 16px;
   pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .hero-enter-btn {
@@ -271,6 +283,10 @@ button {
   text-transform: uppercase;
   cursor: pointer;
   pointer-events: auto;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
   transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
 
@@ -291,6 +307,11 @@ button {
   padding: 8px 6px;
   margin: -8px -6px;
   margin-left: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .hero-dot {
@@ -304,6 +325,11 @@ button {
   align-items: center;
   justify-content: center;
   outline: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .hero-dot-bar {
@@ -313,6 +339,7 @@ button {
   border-radius: 999px;
   background: hsla(38, 25%, 96%, calc(0.4 + 0.45 * var(--prox, 0)));
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
   transition:
     width 130ms cubic-bezier(0.22, 1, 0.36, 1),
     height 130ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -328,6 +355,29 @@ button {
 .hero-dot:focus-visible .hero-dot-bar {
   outline: 2px solid hsla(38, 75%, 72%, 0.9);
   outline-offset: 3px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .hero-dots {
+    gap: 2px;
+    padding: 12px 8px;
+    margin: -12px -8px;
+    margin-left: auto;
+  }
+
+  .hero-dot {
+    padding: 16px 6px;
+  }
+
+  .hero-dot-bar {
+    width: calc(16px * (1 + 0.45 * var(--prox, 0)));
+    height: calc(6px * (1 + 0.45 * var(--prox, 0)));
+  }
+
+  .hero-dot.is-active .hero-dot-bar {
+    width: calc(28px * (1 + 0.45 * var(--prox, 0)));
+    height: calc(6px * (1 + 0.45 * var(--prox, 0)));
+  }
 }
 
 /* ==========================================================================
@@ -654,13 +704,24 @@ button {
   position: fixed;
   right: 10px;
   top: 56%;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateX(8px);
   z-index: 45;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
   padding: 10px 4px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 220ms ease, transform 220ms ease, visibility 220ms ease;
+}
+
+.timeline-scrubber.is-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0);
 }
 
 .scrubber-tick {
@@ -1004,6 +1065,21 @@ button {
 }
 
 @media (max-width: 600px) {
+  .hero-controls-bar {
+    bottom: 14px;
+    gap: 10px;
+  }
+
+  .hero-enter-btn {
+    padding: 8px 12px;
+    font-size: 0.68rem;
+    letter-spacing: 0.11em;
+  }
+
+  .hero-dot {
+    padding: 16px 4px;
+  }
+
   .lightbox-topbar {
     padding: 0 12px;
     gap: 8px;
