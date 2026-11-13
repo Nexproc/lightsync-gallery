@@ -98,7 +98,7 @@ button {
 .hero-stage {
   position: relative;
   width: 100%;
-  min-height: clamp(440px, 76vh, 840px);
+  min-height: clamp(480px, min(86vh, 66.67vw), 960px);
   display: grid;
   grid-template-columns: 1fr;
   border-bottom: 1px solid var(--border-hairline);
@@ -175,7 +175,7 @@ button {
   position: relative;
   background: hsl(24, 10%, 8%);
   overflow: hidden;
-  min-height: clamp(440px, 76vh, 840px);
+  min-height: clamp(480px, min(86vh, 66.67vw), 960px);
   touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;
@@ -192,8 +192,8 @@ button {
   content: "";
   position: absolute;
   inset: auto 0 0 0;
-  height: 130px;
-  background: linear-gradient(to top, rgba(10, 9, 8, 0.68), transparent);
+  height: 120px;
+  background: linear-gradient(to top, rgba(10, 9, 8, 0.64), transparent);
   pointer-events: none;
   z-index: 2;
 }
@@ -202,8 +202,7 @@ button {
   position: absolute;
   inset: 0;
   opacity: 0;
-  transition: opacity 900ms cubic-bezier(0.22, 1, 0.36, 1), transform 6s ease-out;
-  transform: scale(1.035);
+  transition: opacity 820ms cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
   cursor: zoom-in;
   overflow: hidden;
@@ -213,7 +212,6 @@ button {
 
 .hero-slide.is-active {
   opacity: 1;
-  transform: scale(1);
   pointer-events: auto;
 }
 
@@ -223,9 +221,9 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center;
+  object-position: var(--focal-pos, 50% 44%);
   filter: blur(22px);
-  transform: scale(1.08);
+  transform: scale(1.04);
   transition: opacity 560ms ease;
   pointer-events: none;
   -webkit-user-drag: none;
@@ -237,13 +235,17 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center;
+  object-position: var(--focal-pos, 50% 44%);
   display: block;
   opacity: 0;
   transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1);
   -webkit-user-drag: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.hero-slide.is-contain-fallback .hero-hi {
+  object-fit: contain;
 }
 
 .hero-slide.is-loaded .hero-hi {
@@ -1006,6 +1008,20 @@ button {
   color: var(--ink-primary);
 }
 
+@media (max-aspect-ratio: 19/20) {
+  .hero-stage,
+  .hero-stage.has-copy {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .hero-showcase {
+    order: -1;
+    min-height: 0;
+    height: clamp(420px, min(78vh, 145vw), 780px);
+  }
+}
+
 @media (max-width: 920px) {
   .hero-stage,
   .hero-stage.has-copy {
@@ -1015,8 +1031,6 @@ button {
 
   .hero-showcase {
     order: -1;
-    height: 58vh;
-    min-height: 320px;
   }
 
   .timeline-scrubber {
@@ -1030,6 +1044,13 @@ button {
 
   .lb-img {
     max-width: calc(100vw - 32px);
+  }
+}
+
+@media (max-width: 920px) and (min-aspect-ratio: 19/20) {
+  .hero-showcase {
+    min-height: 0;
+    height: clamp(280px, min(82vh, 66.67vw), 560px);
   }
 }
 

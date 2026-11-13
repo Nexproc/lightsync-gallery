@@ -101,6 +101,7 @@
   let suppressScrollObserversUntil = 0;
   let lastHeroDotsTouchTime = 0;
   let lastHeroSwipeTime = 0;
+  let lastHeroOrientation = "";
 
   // =========================================================================
   // Preferences & URL State
@@ -199,20 +200,66 @@
     return lum >= 28 && lqipLen >= 300;
   }
 
-  function pickCarouselSlides() {
-    const heroLandscapes = state.photos.filter((p) => p.hero && p.orientation === "landscape");
-    const brightHeroLandscapes = heroLandscapes.filter(isWellExposedForHero);
+  function getDesiredHeroOrientation() {
+    const w = window.innerWidth || 1024;
+    const h = window.innerHeight || 768;
+    return h > w * 1.05 ? "portrait" : "landscape";
+  }
 
-    let pool = brightHeroLandscapes;
-    if (pool.length < 3) {
-      pool = heroLandscapes.length > 0
-        ? heroLandscapes
-        : state.photos.filter((p) => p.orientation === "landscape" && isWellExposedForHero(p));
+  function getPhotoFocalPosition(photo) {
+    if (Array.isArray(photo.focalPoint) && photo.focalPoint.length >= 2) {
+      const fx = Number(photo.focalPoint[0]);
+      const fy = Number(photo.focalPoint[1]);
+      if (Number.isFinite(fx) && Number.isFinite(fy)) {
+        const cx = Math.max(0, Math.min(100, fx)).toFixed(1);
+        const cy = Math.max(0, Math.min(100, fy)).toFixed(1);
+        return `${cx}% ${cy}%`;
+      }
     }
-    if (pool.length === 0) {
-      pool = state.photos.filter((p) => p.orientation === "landscape");
+    return "50% 44%";
+  }
+
+  function pickCarouselSlides(targetOrientation) {
+    const wantOrientation = targetOrientation || getDesiredHeroOrientation();
+    const rated = state.photos.filter(
+      (p) => typeof p.rating === "number" && p.rating > 0
+    );
+
+    let tierCandidates = [];
+    if (rated.length > 0) {
+      const maxRating = rated.reduce((acc, p) => Math.max(acc, p.rating), 0);
+      const topRated = state.photos.filter((p) => p.rating === maxRating);
+      const topOriented = topRated.filter((p) => p.orientation === wantOrientation);
+
+      if (topOriented.length > 0) {
+        tierCandidates = topOriented;
+      } else if (maxRating > 1) {
+        const nextOriented = state.photos.filter(
+          (p) => (p.rating || 0) >= maxRating - 1 && p.orientation === wantOrientation
+        );
+        tierCandidates = nextOriented.length > 0 ? nextOriented : topRated;
+      } else {
+        tierCandidates = topRated;
+      }
+    } else {
+      const heroOriented = state.photos.filter(
+        (p) => p.hero && p.orientation === wantOrientation
+      );
+      tierCandidates =
+        heroOriented.length > 0
+          ? heroOriented
+          : state.photos.filter((p) => p.orientation === wantOrientation);
     }
-    const source = pool.length > 0 ? pool : state.photos;
+
+    const brightPool = tierCandidates.filter(isWellExposedForHero);
+    let source =
+      brightPool.length >= Math.min(3, tierCandidates.length)
+        ? brightPool
+        : tierCandidates;
+
+    if (source.length === 0) {
+      source = state.photos;
+    }
 
     if (source.length <= MAX_CAROUSEL_SLIDES) {
       return source;
@@ -267,7 +314,9 @@
   }
 
   function renderHeroCover() {
-    state.heroPhotos = pickCarouselSlides();
+    const wantOrientation = getDesiredHeroOrientation();
+    lastHeroOrientation = wantOrientation;
+    state.heroPhotos = pickCarouselSlides(wantOrientation);
 
     if (state.heroSlideIdx >= state.heroPhotos.length) {
       state.heroSlideIdx = 0;
@@ -275,11 +324,17 @@
 
     dom.heroSlidesLayer.replaceChildren();
     dom.heroDots.replaceChildren();
+    dom.heroDots.hidden = state.heroPhotos.length <= 1;
 
     state.heroPhotos.forEach((photo, idx) => {
       const slide = document.createElement("div");
-      slide.className = `hero-slide${idx === state.heroSlideIdx ? " is-active" : ""}`;
+      const mismatchClass =
+        photo.orientation && photo.orientation !== wantOrientation
+          ? " is-contain-fallback"
+          : "";
+      slide.className = `hero-slide${idx === state.heroSlideIdx ? " is-active" : ""}${mismatchClass}`;
       slide.style.backgroundColor = photo.dominantColor || "#141210";
+      slide.style.setProperty("--focal-pos", getPhotoFocalPosition(photo));
 
       if (photo.lqip) {
         const lqipImg = document.createElement("img");
@@ -1566,6 +1621,11 @@
     const galleryRo = new ResizeObserver(() => {
       syncScrubberVisibility();
       if (!state.photos.length) return;
+      const nextOrient = getDesiredHeroOrientation();
+      if (lastHeroOrientation && nextOrient !== lastHeroOrientation) {
+        state.heroSlideIdx = 0;
+        renderHeroCover();
+      }
       const w = getContainerInnerWidth();
       if (Math.abs(w - lastContainerWidth) > 2) {
         renderGallery();
@@ -1615,6 +1675,28 @@
     }
   }
 
+  function mergeManifestEnrichments(remoteManifest, baseManifest) {
+    if (!remoteManifest || !Array.isArray(remoteManifest.photos)) return baseManifest;
+    if (!baseManifest || !Array.isArray(baseManifest.photos)) return remoteManifest;
+
+    const baseById = new Map();
+    for (const bp of baseManifest.photos) {
+      if (bp && bp.id) baseById.set(bp.id, bp);
+    }
+
+    for (const rp of remoteManifest.photos) {
+      const bp = rp && baseById.get(rp.id);
+      if (!bp) continue;
+      if (!Array.isArray(rp.focalPoint) && Array.isArray(bp.focalPoint)) {
+        rp.focalPoint = bp.focalPoint;
+      }
+      if (typeof rp.rating !== "number" && typeof bp.rating === "number") {
+        rp.rating = bp.rating;
+      }
+    }
+    return remoteManifest;
+  }
+
   async function loadManifest() {
     if (window.__EMBEDDED_MANIFEST__) {
       return window.__EMBEDDED_MANIFEST__;
@@ -1629,7 +1711,8 @@
       try {
         const remoteRes = await fetch(remoteUrl, { cache: "no-cache" });
         if (remoteRes.ok) {
-          return await remoteRes.json();
+          const remoteManifest = await remoteRes.json();
+          return mergeManifestEnrichments(remoteManifest, baseManifest);
         }
       } catch (_) {}
     }

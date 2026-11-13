@@ -38,6 +38,17 @@ Static single-page photography gallery published via GitHub Pages (`https://www.
    ```
    After `remoteManifestUrl` is committed once, future syncs via `scripts/sync_drive_to_gcs.py --bucket "$BUCKET"` update the live gallery immediately without needing a new git commit.
 
+4. **Sync Lightroom star ratings & XMP mask focal points (metadata-only, no image re-upload):**
+   ```bash
+   python3 scripts/sync_drive_to_gcs.py \
+     --bucket "$BUCKET" \
+     --manifest-only \
+     --exif-from-dir /path/to/raws_or_finished_library \
+     --lrcat /path/to/Lightroom\ Catalog.lrcat
+   ```
+   - **Hero Carousel:** Selects only top-rated photos (`maxRating`, e.g. `5★`) matching the viewer's screen orientation (landscape on desktop, portrait on phones) and anchors `object-position` to XMP AI mask `ReferencePoint` coordinates (or optical-focus saliency when no mask is present).
+   - **Highlights Tab:** Filters to `4★+` photos.
+
 ---
 
 ## Local Folder Build (Optional)

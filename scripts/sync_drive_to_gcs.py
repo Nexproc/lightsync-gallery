@@ -28,8 +28,8 @@ from typing import Any
 from build_manifest import (
     finalize_manifest_from_records,
     inspect_image_bytes,
-    load_capture_timestamps_from_dir,
-    resolve_stem_capture_timestamp,
+    load_photo_sidecar_metadata,
+    resolve_stem_sidecar_metadata,
 )
 
 DEFAULT_DRIVE_FOLDER_ID = "1v-MDctwhXwaa49xQb6az4_V6hhto8FSQ"
@@ -302,12 +302,23 @@ def parse_args() -> argparse.Namespace:
         "--exif-from-dir",
         type=Path,
         default=None,
-        help="Optional directory of original RAWs (.CR3/.DNG/.NEF/.ARW) or .xmp sidecars to supply capture timestamps when exported JPEGs lack EXIF",
+        help="Optional directory of original RAWs, .xmp sidecars, or .lrcat catalog to supply capture dates, star ratings, and XMP mask focal points",
+    )
+    parser.add_argument(
+        "--lrcat",
+        type=Path,
+        default=None,
+        help="Optional Lightroom Classic .lrcat SQLite catalog path for star ratings",
+    )
+    parser.add_argument(
+        "--heroes",
+        default="",
+        help="Optional comma-separated file stems to force as Highlights",
     )
     parser.add_argument(
         "--manifest-only",
         action="store_true",
-        help="Update timestamps/chapters in existing manifest.json using --exif-from-dir and upload manifest.json to GCS without re-uploading images",
+        help="Update timestamps, star ratings, and XMP focal points in manifest.json and upload manifest.json to GCS without re-uploading images",
     )
     parser.add_argument(
         "--exclude",
@@ -326,9 +337,16 @@ def main() -> None:
     prefix = args.prefix.strip("/")
     token = get_access_token(args.access_token)
     excluded_stems = {Path(s.strip()).stem for s in args.exclude.split(",") if s.strip()}
-    capture_by_stem = load_capture_timestamps_from_dir(args.exif_from_dir)
-    if args.exif_from_dir:
-        print(f"      Loaded {len(capture_by_stem)} capture timestamps from {args.exif_from_dir}")
+    explicit_cli_heroes = {Path(s.strip()).stem for s in args.heroes.split(",") if s.strip()}
+
+    sidecar_meta_map = load_photo_sidecar_metadata(args.exif_from_dir, args.lrcat)
+    if args.exif_from_dir or args.lrcat:
+        ts_cnt = sum(1 for m in sidecar_meta_map.values() if "timestamp" in m)
+        rt_cnt = sum(1 for m in sidecar_meta_map.values() if m.get("rating"))
+        fp_cnt = sum(1 for m in sidecar_meta_map.values() if "focalPoint" in m)
+        print(
+            f"      Loaded sidecar/catalog metadata: {ts_cnt} timestamps, {rt_cnt} star ratings, {fp_cnt} XMP mask focal points"
+        )
 
     base_url = (
         f"https://storage.googleapis.com/{bucket}/{prefix}"
@@ -358,17 +376,22 @@ def main() -> None:
             obj_name = f"{prefix}/{fn}" if prefix else fn
             delete_gcs_object(bucket, obj_name, token)
         if removed_filenames:
-            print(f"      Removed {len(removed_filenames)} excluded object(s) from gs://{bucket}/: {', '.join(removed_filenames)}")
+            print(
+                f"      Removed {len(removed_filenames)} excluded object(s) from gs://{bucket}/: {', '.join(removed_filenames)}"
+            )
 
-        explicit_heroes = {p["id"] for p in filtered_existing if p.get("hero")}
         updated_records: list[dict[str, Any]] = []
         for p in filtered_existing:
             rec = dict(p)
             stem = Path(rec.get("filename") or rec["id"]).stem
-            ts = resolve_stem_capture_timestamp(stem, capture_by_stem)
-            if ts:
-                rec["timestamp"] = ts
-                rec["date"] = ts[:10]
+            meta = resolve_stem_sidecar_metadata(stem, sidecar_meta_map)
+            if meta.get("timestamp"):
+                rec["timestamp"] = meta["timestamp"]
+                rec["date"] = meta["timestamp"][:10]
+            if meta.get("rating") is not None:
+                rec["_rating"] = meta["rating"]
+            if meta.get("focalPoint") is not None:
+                rec["focalPoint"] = meta["focalPoint"]
             updated_records.append(rec)
 
         manifest = finalize_manifest_from_records(
@@ -378,7 +401,7 @@ def main() -> None:
             title=existing_coll.get("title") or "",
             subtitle=existing_coll.get("subtitle") or "",
             curator=existing_coll.get("curator") or "",
-            explicit_heroes=explicit_heroes,
+            explicit_heroes=explicit_cli_heroes or None,
         )
         manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
         args.manifest_out.write_text(manifest_bytes.decode("utf-8"), encoding="utf-8")
@@ -390,9 +413,15 @@ def main() -> None:
             "no-cache, max-age=0",
             token,
         )
+        rated_total = sum(1 for p in manifest["photos"] if p.get("rating"))
+        max_r = manifest["collection"].get("maxRating")
+        top_cnt = (
+            sum(1 for p in manifest["photos"] if p.get("rating") == max_r) if max_r else 0
+        )
         print(
             f"Updated {args.manifest_out} and uploaded {remote_manifest_url} "
-            f"({len(manifest['photos'])} photos across {len(manifest['chapters'])} capture dates)."
+            f"({len(manifest['photos'])} photos across {len(manifest['chapters'])} capture dates; "
+            f"{rated_total} rated, {top_cnt} at top {max_r or '-'}★ tier)."
         )
         return
 
@@ -445,8 +474,14 @@ def main() -> None:
         if len(s_ts) >= 10 and s_ts[4:5] == ":" and s_ts[7:8] == ":":
             s_ts = s_ts.replace(":", "-", 2)
         fallback_iso = s_ts[:19]
-        explicit_dt = resolve_stem_capture_timestamp(Path(filename).stem, capture_by_stem)
-        record = inspect_image_bytes(img_bytes, filename, fallback_iso, explicit_dt)
+        meta = resolve_stem_sidecar_metadata(Path(filename).stem, sidecar_meta_map)
+        record = inspect_image_bytes(
+            img_bytes,
+            filename,
+            fallback_iso,
+            meta.get("timestamp"),
+            meta,
+        )
 
         obj_name = f"{prefix}/{filename}" if prefix else filename
         upload_gcs_object(
@@ -480,6 +515,7 @@ def main() -> None:
         records,
         base_url=base_url,
         remote_manifest_url=remote_manifest_url,
+        explicit_heroes=explicit_cli_heroes or None,
     )
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
     args.manifest_out.write_text(manifest_bytes.decode("utf-8"), encoding="utf-8")
