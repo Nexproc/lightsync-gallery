@@ -51,14 +51,16 @@ Static single-page photography gallery published via GitHub Pages (`https://www.
 
 ---
 
-## Local Folder Build (Optional)
+## Sync Directly from a Local Folder → GCS
 
-If exporting directly from a local folder instead of Google Drive:
+If your exported JPEGs are already on your computer, pass `--local-dir` to upload straight from disk to GCS (skipping Google Drive and skipping unchanged files already in GCS via MD5 check):
 
 ```bash
-python3 scripts/build_manifest.py \
-  --images-dir /path/to/3k_exports \
-  --base-url "https://storage.googleapis.com/$BUCKET/3k_exports" \
-  --remote-manifest-url "https://storage.googleapis.com/$BUCKET/manifest.json" \
-  --out manifest.json
+python3 scripts/sync_drive_to_gcs.py \
+  --bucket "$BUCKET" \
+  --local-dir /path/to/3k_exports \
+  --exif-from-dir /path/to/raws_or_finished_library \
+  --lrcat "/path/to/Lightroom Catalog.lrcat"
 ```
+*(Offline manifest generation without uploading to GCS is also available via `python3 scripts/build_manifest.py --images-dir /path/to/3k_exports --out manifest.json`.)*
+

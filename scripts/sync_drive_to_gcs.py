@@ -14,8 +14,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
+import datetime as dt
+import hashlib
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -183,7 +187,7 @@ def list_drive_images(folder_id: str, token: str) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     page_token = ""
     query = f"'{folder_id}' in parents and trashed = false"
-    fields = "nextPageToken,files(id,name,mimeType,size,createdTime,modifiedTime,imageMediaMetadata)"
+    fields = "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,imageMediaMetadata)"
 
     while True:
         params = {
@@ -209,11 +213,32 @@ def list_drive_images(folder_id: str, token: str) -> list[dict[str, Any]]:
     return files
 
 
-def list_gcs_objects(bucket: str, token: str) -> list[str]:
-    names: list[str] = []
+def list_local_images(local_dir: Path) -> list[Path]:
+    if not local_dir.exists() or not local_dir.is_dir():
+        raise RuntimeError(f"Local directory not found: {local_dir}")
+    direct = sorted(
+        (p for p in local_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS),
+        key=lambda p: p.name.lower(),
+    )
+    if direct:
+        return direct
+    seen_names: set[str] = set()
+    nested: list[Path] = []
+    for p in sorted(local_dir.rglob("*"), key=lambda x: str(x).lower()):
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS and p.name not in seen_names:
+            seen_names.add(p.name)
+            nested.append(p)
+    return nested
+
+
+def list_gcs_object_map(bucket: str, token: str) -> dict[str, tuple[int, str]]:
+    objects: dict[str, tuple[int, str]] = {}
     page_token = ""
     while True:
-        params: dict[str, str] = {"maxResults": "1000", "fields": "nextPageToken,items(name)"}
+        params: dict[str, str] = {
+            "maxResults": "1000",
+            "fields": "nextPageToken,items(name,size,md5Hash)",
+        }
         if page_token:
             params["pageToken"] = page_token
         url = (
@@ -222,12 +247,33 @@ def list_gcs_objects(bucket: str, token: str) -> list[str]:
         )
         data = api_json(url, token)
         for item in data.get("items", []):
-            if "name" in item:
-                names.append(item["name"])
+            name = item.get("name")
+            if name:
+                try:
+                    sz = int(item.get("size") or 0)
+                except (TypeError, ValueError):
+                    sz = 0
+                objects[name] = (sz, str(item.get("md5Hash") or ""))
         page_token = data.get("nextPageToken", "")
         if not page_token:
             break
-    return names
+    return objects
+
+
+def list_gcs_objects(bucket: str, token: str) -> list[str]:
+    return list(list_gcs_object_map(bucket, token).keys())
+
+
+def guess_image_mime(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".png":
+        return "image/png"
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "image/jpeg"
 
 
 def delete_gcs_object(bucket: str, obj_name: str, token: str) -> None:
@@ -286,9 +332,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket", required=True, help="Target GCS bucket name (without gs://)")
     parser.add_argument("--project", default="", help="Optional GCP project ID for API quota header")
     parser.add_argument(
+        "--local-dir",
+        "--images-dir",
+        dest="local_dir",
+        type=Path,
+        default=None,
+        help="Optional local directory of exported .jpg/.webp/.png images to sync directly to GCS (skips Google Drive)",
+    )
+    parser.add_argument(
         "--drive-folder-id",
         default=DEFAULT_DRIVE_FOLDER_ID,
-        help=f"Google Drive folder ID (default: {DEFAULT_DRIVE_FOLDER_ID})",
+        help=f"Google Drive folder ID when --local-dir is omitted (default: {DEFAULT_DRIVE_FOLDER_ID})",
     )
     parser.add_argument("--prefix", default="3k_exports", help="Object prefix inside GCS bucket")
     parser.add_argument("--workers", type=int, default=12, help="Parallel transfer workers")
@@ -319,6 +373,11 @@ def parse_args() -> argparse.Namespace:
         "--manifest-only",
         action="store_true",
         help="Update timestamps, star ratings, and XMP focal points in manifest.json and upload manifest.json to GCS without re-uploading images",
+    )
+    parser.add_argument(
+        "--force-upload",
+        action="store_true",
+        help="Force re-uploading all images even when GCS already has matching MD5 and byte size",
     )
     parser.add_argument(
         "--exclude",
@@ -425,42 +484,105 @@ def main() -> None:
         )
         return
 
-    print(f"[1/5] Listing Google Drive folder {args.drive_folder_id} ...")
-    drive_files = [
-        f
-        for f in list_drive_images(args.drive_folder_id, token)
-        if Path(f.get("name", "")).stem not in excluded_stems
-    ]
-    if not drive_files:
-        print("No images found in Drive folder.", file=sys.stderr)
-        sys.exit(1)
-    print(f"      Found {len(drive_files)} images in Drive.")
+    existing_coll: dict[str, Any] = {}
+    if args.manifest_out.exists():
+        try:
+            existing_coll = json.loads(args.manifest_out.read_text(encoding="utf-8")).get("collection") or {}
+        except Exception:
+            existing_coll = {}
 
-    print(f"[2/5] Removing existing photos in gs://{bucket}/ ...")
-    existing = list_gcs_objects(bucket, token)
+    local_files: list[Path] = []
+    drive_files: list[dict[str, Any]] = []
+    if args.local_dir is not None:
+        print(f"[1/5] Scanning local directory {args.local_dir} ...")
+        local_files = [
+            p for p in list_local_images(args.local_dir) if p.stem not in excluded_stems
+        ]
+        if not local_files:
+            print(f"No images found in local directory: {args.local_dir}", file=sys.stderr)
+            sys.exit(1)
+        source_filenames = {p.name for p in local_files}
+        print(f"      Found {len(local_files)} local images.")
+    else:
+        print(f"[1/5] Listing Google Drive folder {args.drive_folder_id} ...")
+        drive_files = [
+            f
+            for f in list_drive_images(args.drive_folder_id, token)
+            if Path(f.get("name", "")).stem not in excluded_stems
+        ]
+        if not drive_files:
+            print("No images found in Drive folder.", file=sys.stderr)
+            sys.exit(1)
+        source_filenames = {str(f["name"]) for f in drive_files}
+        print(f"      Found {len(drive_files)} images in Drive.")
+
+    desired_obj_names = {
+        (f"{prefix}/{fn}" if prefix else fn) for fn in source_filenames
+    }
+
+    print(f"[2/5] Checking existing objects in gs://{bucket}/ ...")
+    existing_map = list_gcs_object_map(bucket, token)
     to_delete = [
         name
-        for name in existing
-        if name.startswith(f"{prefix}/") or name.lower().endswith(IMAGE_EXTENSIONS)
+        for name in existing_map
+        if (name.startswith(f"{prefix}/") or name.lower().endswith(IMAGE_EXTENSIONS))
+        and (args.force_upload or name not in desired_obj_names)
     ]
     if to_delete:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
             list(pool.map(lambda n: delete_gcs_object(bucket, n, token), to_delete))
-        print(f"      Deleted {len(to_delete)} old objects from gs://{bucket}/.")
+        for n in to_delete:
+            existing_map.pop(n, None)
+        print(f"      Removed {len(to_delete)} stale/replaced object(s) from gs://{bucket}/.")
     else:
-        print("      Bucket already clean (0 existing image objects).")
+        print(
+            f"      {len(existing_map)} object(s) currently in gs://{bucket}/ (0 stale objects to remove)."
+        )
 
     cors_file = Path(__file__).resolve().parent / "gcs-cors.json"
     print(f"[3/5] Applying CORS policy from {cors_file.name} ...")
     apply_bucket_cors(bucket, cors_file, token)
 
-    print(f"[4/5] Streaming {len(drive_files)} Drive images -> gs://{bucket}/{prefix}/ ...")
-    done_count = 0
+    total_items = len(local_files) if args.local_dir is not None else len(drive_files)
+    src_label = f"local {args.local_dir}" if args.local_dir is not None else "Drive"
+    print(f"[4/5] Syncing {total_items} {src_label} images -> gs://{bucket}/{prefix}/ ...")
 
-    def transfer_one(item: dict[str, Any]) -> dict[str, Any]:
+    def _upload_if_changed(obj_name: str, img_bytes: bytes, mime: str) -> bool:
+        if not args.force_upload:
+            md5_b64 = base64.b64encode(hashlib.md5(img_bytes).digest()).decode("ascii")
+            if existing_map.get(obj_name) == (len(img_bytes), md5_b64):
+                return False
+        upload_gcs_object(
+            bucket,
+            obj_name,
+            img_bytes,
+            mime,
+            "public, max-age=31536000, immutable",
+            token,
+        )
+        return True
+
+    def transfer_local_one(path: Path) -> tuple[dict[str, Any], bool]:
+        filename = path.name
+        img_bytes = path.read_bytes()
+        mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
+        fallback_iso = mtime.strftime("%Y-%m-%dT%H:%M:%S")
+        meta = resolve_stem_sidecar_metadata(path.stem, sidecar_meta_map)
+        record = inspect_image_bytes(
+            img_bytes,
+            filename,
+            fallback_iso,
+            meta.get("timestamp"),
+            meta,
+        )
+        obj_name = f"{prefix}/{filename}" if prefix else filename
+        uploaded = _upload_if_changed(obj_name, img_bytes, guess_image_mime(filename))
+        return record, uploaded
+
+    def transfer_drive_one(item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         file_id = item["id"]
         filename = item["name"]
-        mime = item.get("mimeType") or "image/jpeg"
+        mime = item.get("mimeType") or guess_image_mime(filename)
         dl_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
         img_bytes = api_bytes(dl_url, token)
 
@@ -484,37 +606,40 @@ def main() -> None:
         )
 
         obj_name = f"{prefix}/{filename}" if prefix else filename
-        upload_gcs_object(
-            bucket,
-            obj_name,
-            img_bytes,
-            mime,
-            "public, max-age=31536000, immutable",
-            token,
-        )
-        return record
+        uploaded = _upload_if_changed(obj_name, img_bytes, mime)
+        return record, uploaded
 
     records: list[dict[str, Any]] = []
+    done_count = 0
+    uploaded_count = 0
+    skipped_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(transfer_one, item) for item in drive_files]
+        if args.local_dir is not None:
+            futures = [pool.submit(transfer_local_one, p) for p in local_files]
+        else:
+            futures = [pool.submit(transfer_drive_one, item) for item in drive_files]
         for fut in concurrent.futures.as_completed(futures):
-            records.append(fut.result())
+            rec, was_uploaded = fut.result()
+            records.append(rec)
             done_count += 1
-            if done_count % 25 == 0 or done_count == len(drive_files):
-                print(f"      Uploaded {done_count}/{len(drive_files)} photos...")
-
-    base_url = (
-        f"https://storage.googleapis.com/{bucket}/{prefix}"
-        if prefix
-        else f"https://storage.googleapis.com/{bucket}"
-    )
-    remote_manifest_url = f"https://storage.googleapis.com/{bucket}/manifest.json"
+            if was_uploaded:
+                uploaded_count += 1
+            else:
+                skipped_count += 1
+            if done_count % 25 == 0 or done_count == total_items:
+                print(
+                    f"      Processed {done_count}/{total_items} photos "
+                    f"({uploaded_count} uploaded, {skipped_count} unchanged in GCS)..."
+                )
 
     print(f"[5/5] Writing manifest.json and uploading to {remote_manifest_url} ...")
     manifest = finalize_manifest_from_records(
         records,
         base_url=base_url,
         remote_manifest_url=remote_manifest_url,
+        title=existing_coll.get("title") or "",
+        subtitle=existing_coll.get("subtitle") or "",
+        curator=existing_coll.get("curator") or "",
         explicit_heroes=explicit_cli_heroes or None,
     )
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
@@ -527,7 +652,14 @@ def main() -> None:
         "no-cache, max-age=0",
         token,
     )
-    print(f"Done! {len(records)} photos live at {base_url}/")
+    rated_total = sum(1 for p in manifest["photos"] if p.get("rating"))
+    max_r = manifest["collection"].get("maxRating")
+    top_cnt = sum(1 for p in manifest["photos"] if p.get("rating") == max_r) if max_r else 0
+    print(
+        f"Done! {len(records)} photos live at {base_url}/ "
+        f"({uploaded_count} uploaded, {skipped_count} unchanged; "
+        f"{rated_total} rated, {top_cnt} at top {max_r or '-'}★ tier)."
+    )
 
 
 if __name__ == "__main__":
