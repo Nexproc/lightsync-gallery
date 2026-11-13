@@ -8,7 +8,7 @@ Static single-page photography gallery published via GitHub Pages (`https://www.
 - **Proximity-Scaled Hero Carousel:** Full-bleed opening cover with carousel selectors that smoothly double in size as the cursor approaches.
 - **Automatic Date Navigation:** Sticky date pills and a right-edge timeline rail appear automatically whenever multiple capture/export dates exist.
 - **Progressive Blur-Up & Lazy Hydration:** Pre-allocates exact aspect boxes from `manifest.json` with inline 36px WebP placeholders and hydrates full-resolution masters via `IntersectionObserver`.
-- **Fullscreen Zoom Lightbox & Favorites:** Cursor-panning zoom, keyboard navigation (`←`, `→`, `Z`, `F`, `Esc`), direct downloads, and local `Favorites` selection export.
+- **Fullscreen Zoom Lightbox & Local Favorites:** Cursor-panning zoom, keyboard navigation (`←`, `→`, `Z`, `F`, `Esc`), direct downloads, and browser-saved `Favorites` filtering.
 
 ---
 

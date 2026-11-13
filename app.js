@@ -59,7 +59,6 @@
     filterAll: document.getElementById("filter-all"),
     filterHighlights: document.getElementById("filter-highlights"),
     filterFavorites: document.getElementById("filter-favorites"),
-    btnCopyFavorites: document.getElementById("btn-copy-favorites"),
     btnThemeToggle: document.getElementById("btn-theme-toggle"),
 
     timelineScrubber: document.getElementById("timeline-scrubber"),
@@ -85,8 +84,6 @@
     lbPrev: document.getElementById("lb-prev"),
     lbNext: document.getElementById("lb-next"),
     lbFilmstrip: document.getElementById("lightbox-filmstrip"),
-
-    toast: document.getElementById("toast-banner"),
   };
 
   const cardCache = new Map(); // photoId -> { figure, hiImg, btnFav }
@@ -94,7 +91,6 @@
 
   let imgObserver = null;
   let sentinelObserver = null;
-  let toastTimer = null;
   let proximityRaf = 0;
   let scrollRaf = 0;
   let pumpRaf = 0;
@@ -144,13 +140,6 @@
     } catch (_) {}
   }
 
-  function showToast(msg) {
-    dom.toast.textContent = msg;
-    dom.toast.classList.add("is-visible");
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => dom.toast.classList.remove("is-visible"), 2200);
-  }
-
   function resolvePhotoUrl(photo) {
     if (photo.embeddedSrc) return photo.embeddedSrc;
     if (photo.url && /^https?:\/\//i.test(photo.url)) return photo.url;
@@ -188,8 +177,6 @@
     dom.filterAll.classList.toggle("is-active", state.filter === "all");
     dom.filterHighlights.classList.toggle("is-active", state.filter === "highlights");
     dom.filterFavorites.classList.toggle("is-active", state.filter === "favorites");
-
-    dom.btnCopyFavorites.hidden = favCount === 0;
   }
 
   // =========================================================================
@@ -1374,19 +1361,6 @@
       const total = getFilteredPhotos().length;
       state.visibleCount = Math.min(total, state.visibleCount + PAGE_BATCH_SIZE);
       renderGallery();
-    });
-
-    dom.btnCopyFavorites.addEventListener("click", async () => {
-      const picks = state.photos
-        .filter((p) => state.favorites.has(p.id))
-        .map((p) => p.filename);
-      const summary = picks.join("\n");
-      try {
-        await navigator.clipboard.writeText(summary);
-        showToast(`Copied ${picks.length} filenames to clipboard`);
-      } catch (_) {
-        showToast(`${picks.length} favorites saved`);
-      }
     });
 
     dom.btnThemeToggle.addEventListener("click", () => {
