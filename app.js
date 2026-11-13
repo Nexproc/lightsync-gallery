@@ -1585,8 +1585,14 @@
     try {
       const manifest = await loadManifest();
       state.manifest = manifest;
-      state.photos = manifest.photos || [];
-      state.chapters = manifest.chapters || [];
+      state.photos = [...(manifest.photos || [])].sort(
+        (a, b) =>
+          String(b.timestamp || "").localeCompare(String(a.timestamp || "")) ||
+          String(b.id || "").localeCompare(String(a.id || ""))
+      );
+      state.chapters = [...(manifest.chapters || [])].sort((a, b) =>
+        String(b.date || "").localeCompare(String(a.date || ""))
+      );
       state.assetBaseUrl =
         (manifest.collection && manifest.collection.assetBaseUrl) || "./3k_exports";
 

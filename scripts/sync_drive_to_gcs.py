@@ -309,6 +309,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Update timestamps/chapters in existing manifest.json using --exif-from-dir and upload manifest.json to GCS without re-uploading images",
     )
+    parser.add_argument(
+        "--exclude",
+        default="",
+        help="Optional comma-separated file stems or filenames to remove/exclude from GCS and manifest.json",
+    )
     parser.add_argument("--access-token", default="", help="Optional OAuth2 access token")
     return parser.parse_args()
 
@@ -320,6 +325,7 @@ def main() -> None:
     bucket = args.bucket.replace("gs://", "").strip("/")
     prefix = args.prefix.strip("/")
     token = get_access_token(args.access_token)
+    excluded_stems = {Path(s.strip()).stem for s in args.exclude.split(",") if s.strip()}
     capture_by_stem = load_capture_timestamps_from_dir(args.exif_from_dir)
     if args.exif_from_dir:
         print(f"      Loaded {len(capture_by_stem)} capture timestamps from {args.exif_from_dir}")
@@ -337,9 +343,26 @@ def main() -> None:
         existing_manifest = json.loads(args.manifest_out.read_text(encoding="utf-8"))
         existing_coll = existing_manifest.get("collection") or {}
         records_existing = existing_manifest.get("photos") or []
-        explicit_heroes = {p["id"] for p in records_existing if p.get("hero")}
-        updated_records: list[dict[str, Any]] = []
+
+        removed_filenames: list[str] = []
+        filtered_existing: list[dict[str, Any]] = []
         for p in records_existing:
+            fn = p.get("filename") or f"{p['id']}.jpg"
+            stem = Path(fn).stem
+            if stem in excluded_stems or p.get("id") in excluded_stems:
+                removed_filenames.append(fn)
+                continue
+            filtered_existing.append(p)
+
+        for fn in removed_filenames:
+            obj_name = f"{prefix}/{fn}" if prefix else fn
+            delete_gcs_object(bucket, obj_name, token)
+        if removed_filenames:
+            print(f"      Removed {len(removed_filenames)} excluded object(s) from gs://{bucket}/: {', '.join(removed_filenames)}")
+
+        explicit_heroes = {p["id"] for p in filtered_existing if p.get("hero")}
+        updated_records: list[dict[str, Any]] = []
+        for p in filtered_existing:
             rec = dict(p)
             stem = Path(rec.get("filename") or rec["id"]).stem
             ts = resolve_stem_capture_timestamp(stem, capture_by_stem)
@@ -374,7 +397,11 @@ def main() -> None:
         return
 
     print(f"[1/5] Listing Google Drive folder {args.drive_folder_id} ...")
-    drive_files = list_drive_images(args.drive_folder_id, token)
+    drive_files = [
+        f
+        for f in list_drive_images(args.drive_folder_id, token)
+        if Path(f.get("name", "")).stem not in excluded_stems
+    ]
     if not drive_files:
         print("No images found in Drive folder.", file=sys.stderr)
         sys.exit(1)

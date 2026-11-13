@@ -157,7 +157,7 @@ def finalize_manifest_from_records(
     curator: str = "",
     explicit_heroes: set[str] | None = None,
 ) -> dict[str, Any]:
-    raw_photos.sort(key=lambda item: (item["timestamp"], item["id"]))
+    raw_photos.sort(key=lambda item: (item["timestamp"], item["id"]), reverse=True)
 
     explicit = explicit_heroes or set()
     has_rated = any((p.get("_rating") or 0) >= 4 for p in raw_photos)
@@ -194,8 +194,9 @@ def finalize_manifest_from_records(
 
     date_range = ""
     if chapters:
-        first_full = chapters[0]["fullDate"]
-        last_full = chapters[-1]["fullDate"]
+        chronological = sorted(chapters, key=lambda c: c["date"])
+        first_full = chronological[0]["fullDate"]
+        last_full = chronological[-1]["fullDate"]
         date_range = first_full if first_full == last_full else f"{first_full} – {last_full}"
 
     collection_obj: dict[str, Any] = {
@@ -297,12 +298,18 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional comma-separated file stems to mark as Hero highlights",
     )
+    parser.add_argument(
+        "--exclude",
+        default="",
+        help="Optional comma-separated file stems or filenames to exclude from the collection",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     explicit_heroes = {s.strip() for s in args.heroes.split(",") if s.strip()}
+    excluded_stems = {Path(s.strip()).stem for s in args.exclude.split(",") if s.strip()}
 
     drive_ts_by_name: dict[str, str] = {}
     if args.drive_metadata_json and args.drive_metadata_json.exists():
@@ -329,6 +336,8 @@ def main() -> None:
 
     raw_photos: list[dict[str, Any]] = []
     for path in paths:
+        if path.stem in excluded_stems:
+            continue
         fallback_dt = drive_ts_by_name.get(path.name)
         if not fallback_dt:
             mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
